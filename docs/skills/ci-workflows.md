@@ -118,7 +118,11 @@ holds up only the flavors that consume it. Both call
 `grep -qE 'reusable-build\.yml@(v1|[0-9a-f]{40} # v1)$' .github/workflows/build.yml`
 (recipe, `Justfile`, `check`). Both pass `publish_stream_tag: "false"` --
 testing is advanced only after post-testing-e2e validates the build
-(comment, `.github/workflows/build.yml`).
+(comment, `.github/workflows/build.yml`). Both set `rechunk: "true"` to
+opt the testing stream into rechunking and build SBOMs, which
+reusable-build skips by default; the digest pin must include the actions
+change that added the input for this to take effect -- until then the
+caller logs an unexpected-input warning (comment, `.github/workflows/build.yml`).
 
 The two calls carry different `brand_name` values on purpose. The reusable
 workflow keys its own cancel-in-progress concurrency group on `brand_name`

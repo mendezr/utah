@@ -168,6 +168,11 @@ jobs:
       architecture: '["x86_64"]'
       # Testing is advanced only after post-testing-e2e validates the build.
       publish_stream_tag: "false"
+      # Opt into rechunking + SBOM: testing is Utah's only stream and the
+      # reusable workflow skips both on it by default. Dormant until the
+      # digest pin advances past the actions change that added the input
+      # (the caller logs an "Unexpected input(s)" warning until then).
+      rechunk: "true"
 
   dispatch-iso:
     needs: [build_main, build_kernel]
@@ -213,3 +218,6 @@ jobs:
       stream_name: testing
       architecture: '["x86_64"]'
       publish_stream_tag: "false"
+      # Same rechunk opt-in as build_main above: dormant until the digest pin
+      # advances past the actions change that added the input.
+      rechunk: "true"
