@@ -263,6 +263,29 @@ for i in $(seq 1 60); do
 done
 echo "  graphical.target: active"
 
+# The live ISO emits a UTAH_LIVE_READY marker on the serial console once
+# display-manager.service is up (configure-live.sh installs the unit). This is
+# the ready marker the live-boot gate is asked to observe, and it is worth
+# asserting on its own: graphical.target being active proves the target tree
+# exists, not that the desktop finally blessed the session. The marker is only
+# written by the oneshot that runs after the display manager, so catching it
+# in the serial log is a stronger claim than "reached the target".
+echo "Waiting for the Utah ready marker on the serial console..."
+ready_seen=0
+for i in $(seq 1 12); do
+    if grep -qa "UTAH_LIVE_READY" "${SERIAL_LIVE}" 2>/dev/null; then
+        ready_seen=1
+        echo "  UTAH_LIVE_READY marker observed"
+        break
+    fi
+    sleep 5
+done
+if (( ! ready_seen )); then
+    shot live-no-ready-marker "${MONITOR_LIVE}" || true
+    tail -40 "${SERIAL_LIVE}" >&2 || true
+    fail "live serial log never showed the UTAH_LIVE_READY ready marker"
+fi
+
 ssh_live 'systemctl is-active gdm.service' 2>/dev/null | grep -qx active \
     || fail "gdm is not running in the live session"
 echo "  gdm.service: active"

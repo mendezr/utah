@@ -163,8 +163,12 @@ flavors. The expected set comes from `scripts/flavors.py images`.
 Each configured image is pulled by digest, composed into a disposable debug
 ISO, and passed to the existing `iso/scripts/luks-e2e.sh`. Both guests have
 restricted networking. CI requires KVM, PNG screenshots, and OCR evidence
-that fastfetch ran in the graphical terminal. Test credentials are confined
-to the disposable ISO/disk; neither is uploaded or released.
+that fastfetch ran in the graphical terminal. The live-boot gate observes the
+`UTAH_LIVE_READY` ready marker on the serial console in addition to
+`graphical.target`: the marker is written only by the `utah-live-ready.service`
+oneshot that runs after `display-manager.service`, so it catches a boot that
+stopped just short of a usable display. Test credentials are confined to the
+disposable ISO/disk; neither is uploaded or released.
 
 Every matrix job preserves build/test logs, serial logs, and screenshots,
 including on failure. Only passing jobs upload `docs/verification` with the
