@@ -120,9 +120,13 @@ holds up only the flavors that consume it. Both call
 testing is advanced only after post-testing-e2e validates the build
 (comment, `.github/workflows/build.yml`). Both set `rechunk: "true"` to
 opt the testing stream into rechunking and build SBOMs, which
-reusable-build skips by default; the digest pin must include the actions
-change that added the input for this to take effect -- until then the
-caller logs an unexpected-input warning (comment, `.github/workflows/build.yml`).
+reusable-build skips by default. That opt-in is gated on merge order:
+`workflow_call` validates the caller's `with:` against the called
+workflow's declared inputs and fails the run when the pin predates the
+`rechunk` input ("Invalid input, rechunk is not defined in the referenced
+workflow") -- it is not the soft "unexpected input" warning composite
+actions emit. Do not merge until projectbluefin/actions#557 lands and the
+digest pin advances past it (comment, `.github/workflows/build.yml`).
 
 The two calls carry different `brand_name` values on purpose. The reusable
 workflow keys its own cancel-in-progress concurrency group on `brand_name`
