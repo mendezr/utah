@@ -169,13 +169,8 @@ jobs:
       # Testing is advanced only after post-testing-e2e validates the build.
       publish_stream_tag: "false"
       # Opt into rechunking + SBOM: testing is Utah's only stream and the
-      # reusable workflow skips both on it by default.
-      # MERGE-ORDER GATE: workflow_call validates caller `with:` against the
-      # called workflow's declared inputs and hard-fails on an undeclared
-      # one ("Invalid input, rechunk is not defined...") — unlike composite
-      # actions, which only warn. Do not merge this until
-      # projectbluefin/actions#557 has landed AND the digest pin above
-      # advances past that change; otherwise every build fails at resolution.
+      # reusable workflow skips both on it by default. Overridden via
+      # projectbluefin/actions#557, which the pinned reusable-build digest includes.
       rechunk: "true"
 
   dispatch-iso:
@@ -222,6 +217,5 @@ jobs:
       stream_name: testing
       architecture: '["x86_64"]'
       publish_stream_tag: "false"
-      # Same rechunk opt-in as build_main above — same merge-order gate:
-      # blocked on projectbluefin/actions#557 + a digest-pin advance.
+      # Same rechunk opt-in as build_main above.
       rechunk: "true"

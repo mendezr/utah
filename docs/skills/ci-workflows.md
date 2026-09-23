@@ -113,20 +113,17 @@ and why lives in [kernel-cache.md](kernel-cache.md).
 `build_main` needs only `contract`, so `main` starts the moment the gate
 passes; `build_kernel` needs `contract` and `kernel_cache`, so a cache miss
 holds up only the flavors that consume it. Both call
-`reusable-build.yml@8895d09342174927b950abc75dccd6da2c8ba36f # v1`, and
+`reusable-build.yml@4f6c41ff0a16a224f5e54ae80d7affbe2409b3d0 # v1`, and
 `just check` asserts that pin with
 `grep -qE 'reusable-build\.yml@(v1|[0-9a-f]{40} # v1)$' .github/workflows/build.yml`
 (recipe, `Justfile`, `check`). Both pass `publish_stream_tag: "false"` --
 testing is advanced only after post-testing-e2e validates the build
 (comment, `.github/workflows/build.yml`). Both set `rechunk: "true"` to
 opt the testing stream into rechunking and build SBOMs, which
-reusable-build skips by default. That opt-in is gated on merge order:
-`workflow_call` validates the caller's `with:` against the called
-workflow's declared inputs and fails the run when the pin predates the
-`rechunk` input ("Invalid input, rechunk is not defined in the referenced
-workflow") -- it is not the soft "unexpected input" warning composite
-actions emit. Do not merge until projectbluefin/actions#557 lands and the
-digest pin advances past it (comment, `.github/workflows/build.yml`).
+reusable-build skips by default. That opt-in requires the reusable
+workflow's `rechunk` input added in projectbluefin/actions#557 (which
+4f6c41ff0a16a224f5e54ae80d7affbe2409b3d0 includes); `workflow_call` validates
+the caller's `with:` against the declared inputs.
 
 The two calls carry different `brand_name` values on purpose. The reusable
 workflow keys its own cancel-in-progress concurrency group on `brand_name`
