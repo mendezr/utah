@@ -109,7 +109,12 @@ jobs:
         run: |
           # Anonymous pulls are enough to check whether the tag is published;
           # only the push needs credentials, and a fork PR has none to give.
-          echo "$GITHUB_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin \
+          # cosign's go-containerregistry keychain reads Docker's config, not
+          # Podman's default ${XDG_RUNTIME_DIR}/containers/auth.json.
+          mkdir -p "$HOME/.docker"
+          echo "$GITHUB_TOKEN" | podman login ghcr.io \
+            --authfile "$HOME/.docker/config.json" \
+            -u "${{ github.actor }}" --password-stdin \
             || echo "::warning title=ghcr login failed::continuing; a cache hit can still be read anonymously"
       - name: Build the kernel cache image if it is not published yet
         id: cache

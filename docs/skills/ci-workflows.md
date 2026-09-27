@@ -109,8 +109,11 @@ frees runner disk, logs in to GHCR with `GITHUB_TOKEN`, and probes the
 content-hash tag with `podman pull`: a tag that is already published is a
 cache hit and the job exits without building; only a miss builds
 `Containerfile.kernel` and pushes (step "Build the kernel cache image if it
-is not published yet", `.github/workflows/build.yml`). What the tag hashes
-and why lives in [kernel-cache.md](kernel-cache.md).
+is not published yet", `.github/workflows/build.yml`). The login writes to
+`$HOME/.docker/config.json`, which cosign's go-containerregistry keychain
+reads; Podman's default runtime auth file is not visible to cosign. Keep the
+explicit `--authfile` if this job signs the published cache. What the tag
+hashes and why lives in [kernel-cache.md](kernel-cache.md).
 
 ## The build matrix calls reusable-build.yml twice
 
