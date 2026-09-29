@@ -91,19 +91,21 @@ comment, `Containerfile` ~L94; repo files copied at `Containerfile` L40).
 `Containerfile.kernel`'s builder stage may use the pinned Fedora 44 repository
 (`packages/fedora-44.repo`) strictly as a builder-only toolchain.
 
-The install-source identity is single-sourced in `packages/*.repo`. Each repository
-participating in the package install transaction carries a `# utah-install: true`
-annotation (either directly preceding or within the `[section]` header in
-`packages/utah-packages.repo` and `packages/hummingbird.repo`).
-`scripts/install-packages.py` derives the `--enablerepo` set from these annotations
-ordered by priority (ascending), so rebuilds in `utah-packages` (`priority=1`)
-precede base Hummingbird packages (`priority=10`). Repositories without this marker
-(such as `nvidia-container-toolkit` or builder-only `fedora-44`) are excluded from
-the desktop package transaction.
+Install-source identity is single-sourced in `packages/*.repo`. Transaction
+repositories carry `# utah-install: true` in `packages/utah-packages.repo` and
+`packages/hummingbird.repo`; the installer derives its `--enablerepo` set by
+ascending priority (Utah `1`, Hummingbird `10`). NVIDIA and builder-only Fedora
+repositories are excluded from the desktop transaction.
 
-The pinned package image is an RPM repository, not a runtime dependency: its
-contents are copied into the image so the package transaction is reproducible
-and does not depend on a mutable mirror (`Containerfile` L41-44).
+The security contract in `packages/utah.toml` requires matching `allowed`,
+`baseurls`, and `security.<id>` entries: URLs plus `gpgcheck`, `repo_gpgcheck`,
+`sslverify`, and `proxy`. It rejects unpinned mirrors, proxy settings, and disabled
+TLS verification. `gpgcheck=0` is permitted only for the digest-pinned Utah OCI
+repository and NVIDIA's signed metadata; keep these exceptions explicit per ID.
+
+`verify-rpm-contract.py --check packages/bluefin.toml` checks `packages/*.repo`,
+skipping the builder-only Fedora file. Image-time verification scans DNF config and
+all configured `reposdir`s too. Update a repo file and its manifest policy together.
 
 ## Supply-chain download verification
 

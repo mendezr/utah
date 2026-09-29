@@ -1,4 +1,5 @@
 # Fedora 44 is the Hummingbird buildroot pairing, not a runtime repository.
+# builder-only: true
 # Keep this enabled only in Containerfile.kernel's builder stage: the runtime
 # image deliberately ships Hummingbird plus the Utah package repository.
 [fedora-44]

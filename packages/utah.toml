@@ -12,6 +12,45 @@
 #   [build]        toolchain needed to build the pinned GNOME extensions
 #   [unavailable]  Bluefin contract packages none of Utah's repositories provide
 #
+# Runtime RPM repositories are an explicit security contract. Every allowlisted
+# repository has a pinned origin and explicit values for DNF's signature and
+# transport options; keep the settings in the corresponding packages/*.repo
+# file in sync. The local utah-packages repository is authenticated by its
+# digest-pinned OCI image, so its gpgcheck=0 is intentional.
+[repositories]
+allowed = [
+    "utah-packages",
+    "public-hummingbird-x86_64-rpms",
+    "nvidia-container-toolkit",
+]
+
+[repositories.baseurls]
+utah-packages = ["file:///etc/utah-packages"]
+public-hummingbird-x86_64-rpms = [
+    "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/",
+]
+nvidia-container-toolkit = [
+    "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch",
+]
+
+[repositories.security.utah-packages]
+gpgcheck = "0"
+repo_gpgcheck = "0"
+sslverify = "1"
+proxy = ""
+
+[repositories.security.public-hummingbird-x86_64-rpms]
+gpgcheck = "1"
+repo_gpgcheck = "0"
+sslverify = "1"
+proxy = ""
+
+[repositories.security.nvidia-container-toolkit]
+gpgcheck = "0"
+repo_gpgcheck = "1"
+sslverify = "1"
+proxy = ""
+
 # On [multimedia_overrides], which Utah deliberately does not install:
 #
 #   Those twelve entries -- mesa-libGL, mesa-vulkan-drivers, libva,

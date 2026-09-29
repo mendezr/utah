@@ -68,6 +68,9 @@ def write_overlay(
         + toml_section("hardware", hardware or [])
         + toml_section("services", services or [])
         + toml_section("unavailable", unavailable or [])
+        + '[repositories]\nallowed = []\n\n'
+        + '[repositories.baseurls]\n\n'
+        + '[repositories.security]\n'
     )
     return path
 
