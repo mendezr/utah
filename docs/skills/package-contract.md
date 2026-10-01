@@ -56,6 +56,16 @@ policy for changing them.
   - `[unavailable]` — Bluefin contract packages none of Utah's repositories
     provide.
 
+## Wi-Fi documentation currency
+
+Wi-Fi needs both `[hardware]` firmware and the `[parity]` userspace stack:
+`NetworkManager-wifi`, `wpa_supplicant`, `wireless-regdb` and `iw`. These names
+are now in the install contract; the former factory dependency blocker is
+not a current gap. When a dependency lands, update both the nearby manifest
+comments and the README gap list. Keep package availability separate from
+runtime evidence: only testing device detection and association on the target
+hardware establishes that its radio works.
+
 ## [unavailable] rules
 
 `[unavailable]` means "no source provides this name at all". Each entry

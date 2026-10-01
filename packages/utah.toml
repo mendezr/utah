@@ -231,10 +231,11 @@ packages = [
 # CPU errata updates need a factory recipe first and are worth their own
 # issue.
 #
-# Necessary, not sufficient: with the firmware present the driver loads, but
-# NetworkManager still does not manage the interface until NetworkManager-wifi
-# can be installed. That half is blocked on the factory, and [parity] above
-# records why.
+# Firmware lets the driver load its device blob; NetworkManager's Wi-Fi
+# support also needs the userspace stack. [parity] above installs
+# NetworkManager-wifi, wpa_supplicant, wireless-regdb and iw now that the
+# factory dependencies are published. Package coverage is not proof that
+# every wireless device works; validate association on the target hardware.
 packages = [
     "linux-firmware",
     "iwlwifi-dvm-firmware",

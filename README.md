@@ -127,14 +127,14 @@ This is the honest list, and it is why the label above says pre-alpha.
   `bootupd`. Switchers can confirm the ESP is being maintained with
   `bootctl status` (compare `Current` against `Available`) rather than
   `bootupctl status` (links #363).
-- **Wi-Fi needs a package the factory has not built yet.** The image ships no
-  device firmware of its own — the bootable base carries none, and Bluefin only
-  appears to because Fedora's Silverblue base supplies `linux-firmware`. `[hardware]`
-  in `packages/utah.toml` now installs it, so a wireless driver can load its
-  blob. That is necessary but not sufficient: Hummingbird's `NetworkManager-wifi`
-  requires `wireless-regdb` and a supplicant, none of which exists in any
-  enabled repository, so NetworkManager still does not manage the interface
-  (`utah-packages#136`; the pin that would carry them is `#126`).
+- **Wi-Fi package coverage is not hardware validation.** `[hardware]` in
+  `packages/utah.toml` installs `linux-firmware` and explicit Intel wireless
+  firmware packages so drivers can load their device blobs. `[parity]` installs
+  Hummingbird's `NetworkManager-wifi` together with the factory's
+  `wpa_supplicant`, `wireless-regdb` and `iw`; the former factory dependency
+  blocker is resolved. Verify device detection and network association on
+  the target hardware rather than treating the package list as proof that
+  every radio works.
 - **The NVIDIA and gaming flavors are unproven.** The OGC kernel compiles with
   `sched_ext` and `binderfs` genuinely enabled, and the NVIDIA open module
   compiles for the base kernel. The module against the OGC kernel, the driver
