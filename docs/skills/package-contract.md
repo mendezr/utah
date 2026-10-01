@@ -241,6 +241,13 @@ just check-audit-parity                # fail on partition growth
 just check-audit-parity --ref=HEAD     # audit against an unpinned Bluefin ref
 ```
 
+The recipes read their flags from a `*args` parameter that is interpolated
+into the shebang body with `{{args}}`. A `just` shebang recipe receives no
+positional parameters (`$# = 0`), so a `"$@"` loop there is a silent no-op:
+the flags never reach the script and the recipe falls back to report-only
+`run`. Value flags use the `--key=value` form, which is what the recipe's
+`case` re-parses.
+
 The audit needs network (the factory OCI metadata layer and Hummingbird's
 `repodata/`); it is a sibling of `just check-repos`, not part of `just
 check`, which stays offline.

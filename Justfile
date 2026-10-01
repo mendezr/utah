@@ -255,19 +255,21 @@ baselines bluefin="ghcr.io/ublue-os/bluefin:stable" utah="ghcr.io/projectbluefin
 #   just audit-bluefin-parity --write        # record the new baseline after printing
 #   just audit-bluefin-parity --check        # compare against the recorded baseline
 #
-# Pass `--ref <sha|tag|branch>` to audit against a Bluefin revision that
+# Pass `--ref=<sha|tag|branch>` to audit against a Bluefin revision that
 # is not yet committed to packages/.bluefin-parity-ref. The default is the
 # pinned SHA in that file.
 #
-# Args are forwarded as `--key=value` because `just` does not allow
-# bare `--flag value` to reach a recipe body without going through a
-# parameter binding. The forwarding script re-parses them.
+# Args are interpolated into the body with `{{args}}`, not read from `$@`: a
+# `just` shebang recipe receives no positional parameters (`$# = 0`), so a
+# `"$@"` loop never sees the flags. Value flags use the `--key=value` form
+# because that is all the forwarding script's `case` matches; the flags are
+# re-parsed there.
 audit-bluefin-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
     subcommand="run"
     forward=()
-    for arg in "$@"; do
+    for arg in {{args}}; do
       case "$arg" in
         --check) subcommand="check" ;;
         --write) forward+=(--write) ;;
@@ -284,7 +286,7 @@ check-audit-parity *args:
     #!/usr/bin/env bash
     set -euo pipefail
     forward=()
-    for arg in "$@"; do
+    for arg in {{args}}; do
       case "$arg" in
         --ref=*) forward+=("$arg") ;;
         *) echo "check-audit-parity: unknown argument: $arg" >&2; exit 64 ;;

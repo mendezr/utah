@@ -19,6 +19,8 @@ import gzip
 import importlib.util
 import io
 import json
+import shutil
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -392,6 +394,46 @@ class SubcommandTests(unittest.TestCase):
                 code = audit.cmd_check(Namespace(ref=None))
             self.assertEqual(code, 2)
             audit.UTAH_TOML, audit.CONTAINERFILE, audit.BASELINE, audit.PARITY_REF = saved
+
+
+class RecipeArgForwardingTests(unittest.TestCase):
+    """The audit recipes must interpolate args; shebang recipes see no `$@`.
+
+    `just` runs a shebang recipe by handing its body to the interpreter;
+    the recipe's arguments are not positional parameters to that script
+    (`$# = 0`). A body that reads `"$@"` is a no-op, so
+    `just audit-bluefin-parity --check` silently ran the report-only
+    `run` subcommand. The flags must be interpolated into the body with
+    `{{args}}` instead. `just --dry-run` renders the interpolated body,
+    which is what these tests assert.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.just = shutil.which("just")
+        if not cls.just:
+            raise unittest.SkipTest("just is not installed")
+
+    def _rendered_body(self, *argv: str) -> str:
+        result = subprocess.run(
+            [self.just, "--justfile", str(ROOT / "Justfile"),
+             "--working-directory", str(ROOT), "--dry-run", *argv],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return result.stdout
+
+    def test_audit_recipe_carries_check_flag_into_body(self):
+        body = self._rendered_body("audit-bluefin-parity", "--check")
+        self.assertIn("for arg in --check", body)
+        self.assertNotIn('"$@"', body)
+
+    def test_audit_recipe_carries_write_and_ref_into_body(self):
+        body = self._rendered_body("audit-bluefin-parity", "--write", "--ref=HEAD")
+        self.assertIn("for arg in --write --ref=HEAD", body)
+
+    def test_check_recipe_carries_ref_into_body(self):
+        body = self._rendered_body("check-audit-parity", "--ref=HEAD")
+        self.assertIn("for arg in --ref=HEAD", body)
+        self.assertNotIn('"$@"', body)
 
 
 if __name__ == "__main__":
