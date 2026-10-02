@@ -37,6 +37,20 @@ def policy(
     return verifier.RepositoryPolicy(frozenset(allowed), baseurls, options)
 
 
+def check_sections(parser, source, repo_policy):
+    return verifier.check_repo_sections(
+        parser, source, set(repo_policy.allowed),
+        expected_baseurls=repo_policy.baseurls, expected_security=repo_policy.options,
+    )
+
+
+def scan_repository(directory, repo_policy):
+    return verifier.verify_repository_policy(
+        directory, set(repo_policy.allowed),
+        expected_baseurls=repo_policy.baseurls, expected_security=repo_policy.options,
+    )
+
+
 def config(**options: str) -> configparser.ConfigParser:
     parser = configparser.ConfigParser(interpolation=None)
     body = [f"[{REPO}]", "enabled=1", f"baseurl={BASEURL}"]
@@ -47,7 +61,7 @@ def config(**options: str) -> configparser.ConfigParser:
 
 class RepositoryOptionPolicyTests(unittest.TestCase):
     def errors(self, **options: str) -> list[str]:
-        return verifier.check_repo_sections(
+        return check_sections(
             config(**options), "hummingbird.repo", policy()
         )
 
@@ -64,7 +78,7 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             "gpgcheck=1\nrepo_gpgcheck=0\nsslverify=1\n"
         )
         self.assertEqual(
-            verifier.check_repo_sections(parser, "hummingbird.repo", policy()),
+            check_sections(parser, "hummingbird.repo", policy()),
             [],
         )
 
@@ -75,7 +89,7 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             f"baseurl={BASEURL} https://user:secret@evil.invalid/mirror\n"
             "gpgcheck=1\nrepo_gpgcheck=0\nsslverify=1\n"
         )
-        errors = verifier.check_repo_sections(parser, "hummingbird.repo", policy())
+        errors = check_sections(parser, "hummingbird.repo", policy())
         self.assertTrue(any("unpinned baseurl" in error for error in errors), errors)
         self.assertNotIn("secret", " ".join(errors))
 
@@ -86,7 +100,7 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             "metalink=https://evil.invalid/mirrors.xml\n"
             "gpgcheck=1\nrepo_gpgcheck=0\nsslverify=1\n"
         )
-        errors = verifier.check_repo_sections(parser, "hummingbird.repo", policy())
+        errors = check_sections(parser, "hummingbird.repo", policy())
         self.assertTrue(any("metalink" in error for error in errors), errors)
 
     def test_each_security_sensitive_option_is_attested(self) -> None:
@@ -116,7 +130,7 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             "gpgcheck=0\nrepo_gpgcheck=0\nsslverify=1\n"
         )
         self.assertEqual(
-            verifier.check_repo_sections(
+            check_sections(
                 parser, "utah-packages.repo",
                 policy(
                     {local_id},
@@ -130,7 +144,7 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
         )
 
     def test_an_allowlisted_id_needs_both_origin_and_security_pins(self) -> None:
-        errors = verifier.check_repo_sections(
+        errors = check_sections(
             config(gpgcheck="1", repo_gpgcheck="0", sslverify="1"),
             "hummingbird.repo", policy(baseurls={}, options={}),
         )
@@ -263,8 +277,71 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
                 f"[{REPO}]\nenabled=1\nbaseurl={BASEURL}\n"
                 "gpgcheck=0\nrepo_gpgcheck=0\nsslverify=1\n"
             )
-            errors = verifier.verify_repository_policy(root, policy())
+            errors = scan_repository(root, policy())
         self.assertTrue(any("gpgcheck" in error for error in errors), errors)
+
+    def runtime_errors(self, configs: dict[str, str], *, repo_options: str = "gpgcheck=1\nrepo_gpgcheck=0\nsslverify=1\n") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repos = root / "etc/yum.repos.d"
+            repos.mkdir(parents=True)
+            (repos / "hummingbird.repo").write_text(f"[{REPO}]\nbaseurl={BASEURL}\n{repo_options}")
+            for relative, text in configs.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+            return verifier.verify_runtime_repository_policy(policy(), root=root)
+
+    def test_dnf5_third_default_repository_directory_is_scanned(self) -> None:
+        errors = self.runtime_errors({"usr/share/dnf5/repos.d/leak.repo": "[fedora]\nenabled=1\n"})
+        self.assertTrue(any("Fedora" in error and "leak.repo" in error for error in errors), errors)
+
+    def test_main_dropins_mask_by_name_and_dnf_conf_wins_last(self) -> None:
+        configs = {
+            "usr/share/dnf5/libdnf.conf.d/20-security.conf": "[main]\nsslverify=0\nproxy=http://untrusted\n",
+            "etc/dnf/libdnf5.conf.d/20-security.conf": "[main]\nsslverify=1\n",
+            "etc/dnf/libdnf5.conf.d/90-signatures.conf": "[main]\ngpgcheck=0\n",
+            "etc/dnf/dnf.conf": "[main]\ngpgcheck=1\n",
+        }
+        self.assertEqual(self.runtime_errors(configs, repo_options=""), [])
+        configs["etc/dnf/dnf.conf"] = "[main]\ngpgcheck=0\n"
+        errors = self.runtime_errors(configs, repo_options="")
+        self.assertTrue(any("gpgcheck" in error for error in errors), errors)
+
+    def test_repo_override_globs_apply_after_repo_settings(self) -> None:
+        configs = {"usr/share/dnf5/repos.override.d/20-security.repo": "[public-hummingbird-*]\nsslverify=0\nproxy=http://untrusted\n"}
+        errors = self.runtime_errors(configs)
+        self.assertTrue(any("sslverify" in error for error in errors), errors)
+        self.assertTrue(any("proxy" in error for error in errors), errors)
+        configs["etc/dnf/repos.override.d/20-security.repo"] = "[public-hummingbird-*]\nsslverify=1\nproxy=\n"
+        self.assertEqual(self.runtime_errors(configs), [])
+        configs["etc/dnf/repos.override.d/90-final.repo"] = f"[{REPO}]\ngpgcheck=0\n"
+        errors = self.runtime_errors(configs)
+        self.assertTrue(any("gpgcheck" in error and "90-final.repo" in error for error in errors), errors)
+
+    def test_effective_package_check_alias_cannot_bypass_policy(self) -> None:
+        configs = {"etc/dnf/repos.override.d/security.repo": "[public-hummingbird-*]\npkg_gpgcheck=0\n"}
+        errors = self.runtime_errors(configs)
+        self.assertTrue(any("gpgcheck" in error for error in errors), errors)
+        configs["etc/dnf/repos.override.d/zz-last.repo"] = f"[{REPO}]\ngpgcheck=1\n"
+        self.assertEqual(self.runtime_errors(configs), [])
+
+    def test_gpgcheck_policy_expands_to_effective_metadata_check(self) -> None:
+        errors = self.runtime_errors({"etc/dnf/dnf.conf": "[main]\ngpgcheck_policy=full\n"}, repo_options="gpgcheck=1\n")
+        self.assertTrue(any("repo_gpgcheck" in error for error in errors), errors)
+        self.assertEqual(self.runtime_errors({"etc/dnf/dnf.conf": "[main]\ngpgcheck_policy=full\n"}), [])
+
+    def test_overrides_enable_existing_leaks_but_cannot_create_repositories(self) -> None:
+        configs = {"etc/dnf/repos.override.d/all.repo": "[fedora*]\nenabled=1\n"}
+        self.assertEqual(self.runtime_errors(configs), [])
+        configs["usr/share/dnf5/repos.d/fedora.repo"] = "[fedora-44]\nenabled=0\n"
+        errors = self.runtime_errors(configs)
+        self.assertTrue(any("Fedora" in error for error in errors), errors)
+
+    def test_libdnf5_user_dropin_proxy_is_not_ignored(self) -> None:
+        errors = self.runtime_errors({"etc/dnf/libdnf5.conf.d/proxy.conf": "[main]\nproxy=http://untrusted\n"})
+        self.assertTrue(any("DNF-wide proxy" in error for error in errors), errors)
+
 
 
 if __name__ == "__main__":
