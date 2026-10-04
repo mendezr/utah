@@ -33,9 +33,12 @@
 #
 #   The factory is already building several of them for Hummingbird --
 #   intel-gmmlib, intel-mediasdk, intel-vpl-gpu-rt, libheif and libva all built
-#   in projectbluefin/hummingbird-github. When that overlay is published and enabled
-#   here, it becomes the source that negativo17 is for Bluefin, and these can
-#   move into the contract as a version assertion rather than a name one.
+#   in projectbluefin/hummingbird-github. Consuming the Intel media runtimes
+#   (intel-gmmlib, libva-intel-media-driver) via [parity] is pending on #397,
+#   which also carries intel-mediasdk and intel-vpl-gpu-rt; none of them is
+#   requested here yet. When the overlay is published and enabled here, it becomes
+#   the source that negativo17 is for Bluefin, and these can move into the
+#   contract as a version assertion rather than a name one.
 
 [gnome]
 # Hummingbird supplies the bootable base but not a desktop.  The pinned
@@ -116,7 +119,10 @@ libadwaita = "1"
 # ALSA use-case profiles, the language pack and the core font set.
 #
 # Left out, with the dependency the pinned repositories do not carry:
-#   default-fonts-core-math    needs stix-fonts (utah-packages#147)
+#   default-fonts-core-math    the factory now publishes stix-fonts (#382),
+#                              so the dependency half of this gap is closed;
+#                              the font package join itself is a separate
+#                              parity ticket (#263).
 #
 # Wi-Fi, printing, fingerprint login and PDF tools arrived with the factory
 # image published 2026-09-25 (sha256:9e17ca2c), the first publish since
@@ -158,6 +164,8 @@ packages = [
     # Dakota parity gap this resolves (utah-packages#146, now published).
     "alsa-ucm",
     "alsa-utils",
+    # Bluetooth printer backend, published by the pinned factory (#390).
+    "bluez-cups",
     # Locale and fonts
     "langpacks-en",
     "langpacks-fonts-en",
@@ -170,6 +178,11 @@ packages = [
     "google-noto-serif-vf-fonts",
     "google-noto-sans-symbols-2-fonts",
     "google-noto-sans-math-fonts",
+    # Math-font core set. stix-fonts is published in the pinned factory image
+    # (resolves utah-packages#147). default-fonts-core-math, which Requires
+    # it, stays out until its own parity ticket (#263); this adds the font
+    # itself (#382).
+    "stix-fonts",
     # Shell and tooling Bluefin users reach for
     "bash-completion",
     "man-db",
@@ -185,6 +198,13 @@ packages = [
     "crypto-policies-scripts",
     "python3-pip",
     "systemd-container",
+    # pam_pwquality's dictionary. Fedora's Silverblue base pulls it in;
+    # Hummingbird's cracklib does not require it. Without it libpwquality
+    # fails every candidate with "error loading dictionary", so passwd (via
+    # pam_pwquality in system-auth) refused every new password, GNOME Settings'
+    # password change with it, and Initial Setup rated every password a
+    # failure. Verified on a booted testing-20261001-41873b5.
+    "cracklib-dicts",
     # Printing (driverless IPP Everywhere; ghostscript and cups-filters first
     # published in the factory image of 2026-09-26), fingerprint login, PDF tools.
     "cups",
@@ -214,6 +234,23 @@ packages = [
     "acl",
     "attr",
     "buildah",
+    # Factory-built names the pinned factory image publishes and the
+    # parity audit catalog tracks as built but not yet consumed (#382).
+    # Each resolves against the pinned factory repodata (sha256:0f04cff)
+    # + Hummingbird primary; exact-EVR couplings verified by CI on
+    # build utah run 37066608765. The Intel media runtimes
+    # (intel-gmmlib, libva-intel-media-driver) live on #397 because that
+    # PR also carries intel-mediasdk and intel-vpl-gpu-rt and is the
+    # single point of decision for that overlay.
+    "desktop-file-utils",
+    "fuse-libs",
+    "gvfs-smb",
+    "ibus-gtk4",
+    "libnma",
+    "libpcap",
+    "linux-atm-libs",
+    "pipewire-config-raop",
+    "setools-console",
     # Network filesystems: base-image parity measured from the published
     # Bluefin image (baselines/GAP.md, #263). Bluefin inherits the full samba
     # closure from Silverblue; samba resolves today against the pinned
@@ -250,11 +287,6 @@ packages = [
 # arrive through the Recommends, which the install keeps: the image
 # transaction does not set install_weak_deps=False.
 #
-# microcode_ctl is deliberately absent. It is in neither enabled repository,
-# so naming it would fail the transaction outright rather than record a gap;
-# CPU errata updates need a factory recipe first and are worth their own
-# issue.
-#
 # Firmware lets the driver load its device blob; NetworkManager's Wi-Fi
 # support also needs the userspace stack. [parity] above installs
 # NetworkManager-wifi, wpa_supplicant, wireless-regdb and iw now that the
@@ -266,6 +298,23 @@ packages = [
     "iwlwifi-mvm-firmware",
     "iwlwifi-mld-firmware",
     "iwlegacy-firmware",
+    # Intel sound and camera firmware shipped separately from linux-firmware
+    # (#382). alsa-sof-firmware is the Sound Open Firmware blobs that the
+    # snd-sof-pci driver loads; without it the Intel audio device shows up
+    # but never plays.
+    "alsa-sof-firmware",
+    # Intel camera (ipu6) firmware, distinct from linux-firmware's camera
+    # coverage (#382).
+    "intel-vsc-firmware",
+    # Marvell libertas Wi-Fi firmware. Not in linux-firmware's weak-deps
+    # set; the radio needs the libertas-firmware package explicitly.
+    "libertas-firmware",
+    # Intel/AMD CPU microcode updates, packaged separately from
+    # linux-firmware (#382). microcode_ctl was deliberately absent because
+    # the factory had no recipe; the factory now publishes one. Early loading
+    # also needs the initramfs regenerated after this install: until #564
+    # lands, the shipped initramfs carries no microcode at all.
+    "microcode_ctl",
 ]
 
 [build]
@@ -291,6 +340,9 @@ packages = [
 # Bluefin's desktop image adds these to the server base before 40-services.sh
 # enables their units. uupd is downloaded separately because it is published
 # as a release binary rather than an RPM in the Hummingbird repositories.
+# Avahi's client libraries do not install the daemon. The explicit avahi
+# request supplies avahi-daemon.service/socket enabled by the desktop policy
+# (#104, #387); switcheroo-control is already in the Bluefin contract.
 #
 # systemd-resolved and flatpak are not in the Bluefin contract because Fedora's
 # base image already carries them. Hummingbird's bootable base does not.
@@ -334,6 +386,7 @@ packages = [
 # systemd-oomd's pressure-based kills. Revisit it as its own change against
 # #384's OOM question rather than assuming the omission was an oversight.
 packages = [
+    "avahi",
     "cryptsetup",
     "flatpak",
     "fwupd",

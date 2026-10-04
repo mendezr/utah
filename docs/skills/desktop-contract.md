@@ -67,6 +67,7 @@ The TOML's sections are the contract's table of contents:
   `99-flatpaks.sh` privileged-setup hook, and the system-flatpaks Brewfile
   whose app list the contract enumerates.
 - **`[services]`** — systemd units the preset must enable: `gdm.service`,
+  `avahi-daemon.service`, `avahi-daemon.socket`, `switcheroo-control.service`,
   `bluetooth.service`, `ublue-system-setup.service`, `flatpak-preinstall.service`,
   `flatpak-nuke-fedora.service`, `brew-setup.service`, `dconf-update.service`,
   `bootc-unified-storage.service`, `uupd.timer`. Update policy delegates
@@ -76,6 +77,92 @@ The TOML's sections are the contract's table of contents:
   (e.g. switching from Bluefin) do not carry active `timers.target.wants`
   symlinks that bypass uupd staging or undo manual rollbacks. Switchers can
   also manually verify or mask them if a local `/etc` symlink was preserved.
+
+  A unit being enabled in the built image is not the same as it being enabled
+  on a booted one. bootc applies presets on first boot, and Hummingbird's
+  `99-default-disable.preset` turns off every unit no preset names, so a build
+  -time `systemctl enable` without a line in `85-utah-desktop.preset` (or a
+  vendor preset such as brew's `01-homebrew.preset`) is undone. That is how
+  `flatpak-preinstall.service` shipped "enabled" and booted disabled, leaving
+  non-ISO installs without Bazaar. `DesktopUnitEnablementTests` holds the
+  script and the preset in agreement. Check a booted VM with `systemctl
+  is-enabled <unit>` when in doubt.
+
+  The Flathub remote is a `/etc/flatpak/remotes.d` descriptor, applied to the
+  repo once, when `/var/lib/flatpak/repo` is created. Flathub's descriptor has
+  no collection ID, while common's preinstall entries pin
+  `CollectionID=org.flathub.Stable`, and `flatpak preinstall` silently skips a
+  remote whose ID differs ("Nothing to do."). `configure-services.sh` adds
+  `DeployCollectionID=org.flathub.Stable` to the descriptor at build time.
+  Editing the descriptor on a booted system changes nothing once the repo
+  exists (`xa.applied-remotes`); use `flatpak remote-modify --collection-id`.
+
+  Once enabled, the preinstall's Flathub download held `graphical.target` for
+  60 s on first boot: common's unit is a oneshot wanted by `multi-user.target`.
+  `flatpak-preinstall.service.d/10-utah-background.conf` sets
+  `DefaultDependencies=no` with the equivalent explicit ordering, so it runs
+  in the background (the unit keeps its own `network-online.target` ordering).
+
+The common image pinned in `Containerfile` (`COMMON_IMAGE_SHA`) includes
+`projectbluefin/common#1284`, which removed Warehouse and smile from Bluefin's
+default Brewfile. Utah follows that upstream default set; the ordered app
+contract changes with the pinned artifact rather than overriding its Brewfile.
+Read the live pin from `Containerfile` — Renovate rewrites it there, so no
+digest is repeated in this document. The verifier still compares the actual
+inherited Brewfile. This source change does not
+introduce an uninstall for existing user-installed applications.
+
+The same pinned Common artifact owns ChairLift's alpha.4 helper and ublue
+policy. Their payload matches the release and requires administrator
+authentication for all nine actions. The image contract requires both files;
+Utah does not layer a duplicate release install over Common's copy.
+
+## NoNewPrivileges and SELinux domain transitions
+
+Hummingbird's hardened units can set `NoNewPrivileges=yes` where Fedora's do
+not. Under NNP a domain transition needs an explicit `nnp_transition`
+permission, and when the targeted policy lacks one the daemon silently runs in
+`init_t` and fails on its first labelled write. avahi-daemon (0.9~rc4) is the
+known case (#443): it exited 255 every start, so mDNS never worked.
+`avahi-daemon.service.d/10-utah-selinux.conf` sets `NoNewPrivileges=no`; the
+daemon still runs confined as `avahi_t`. Spot others on a booted VM with
+`journalctl -b | grep nnp_transition` and `ps -eZ` (a daemon showing
+`init_t` is the symptom).
+## First-boot work must not gate graphical.target
+
+`systemd-analyze critical-chain graphical.target` on a fresh VM is the check.
+A target orders itself `After=` every unit it `Wants` unless that unit sets
+`DefaultDependencies=no`, so a `Type=oneshot` wanted by `multi-user.target`
+holds both targets until it exits. `bootc-unified-storage.service` did that for
+the full registry pull of the booted image (82 s of a 1 min 32 s boot on a
+datacenter link), despite a comment claiming it needed no network. It now sets
+`DefaultDependencies=no` with the equivalent explicit ordering plus
+`network-online.target`, runs at idle priority and retries every 15 minutes.
+Do not wrap `bootc` in `sh -c` to sequence it: the bare binary's
+`install_exec_t` label is its SELinux entrypoint, and wrapped it ran as
+`initrc_t` with its `chcon` calls denied `mac_admin`. Pinned by
+`tests/test_unified_storage_unit.py`.
+## Boot-error noise is a bug (#444)
+
+`ujust report` attaches the current boot's error-priority journal, and on a
+fresh Utah it was nearly all noise, which buried the stack traces in #444.
+Each source was fixed at its root, verified on a booted VM, and is pinned by
+`tests/test_boot_noise.py`:
+
+- `Failed to resolve group 'plugdev'` / `'nintendo_switch'`, about 100 lines:
+  udev rules from libfido2 and common name groups nothing creates.
+  `sysusers.d/utah-udev-groups.conf` creates them.
+- `fchmod() of / failed: Read-only file system`: systemd's `root.conf`
+  (`z / 555`) cannot apply to the composefs root. `/etc/tmpfiles.d/root.conf`
+  masks it by name with a comment-only file.
+- `Creating mailbox file: No such file or directory` on every `useradd`:
+  clean-stage drops `/var/spool/mail`. `tmpfiles.d/utah-mail.conf` recreates it.
+- `error loading config '.../50-bluefin-bt-switch.conf': Invalid argument`:
+  common's file is comments only, which PipeWire 1.6 rejects. Utah's copy
+  adds a no-op `pulse.cmd = [ ]`; drop it once common's copy parses.
+
+When something new appears in `journalctl -b -p err` on a fresh VM, treat it
+the same way rather than filtering it out of the report.
 
 ## Tolerating a non-zero exit in a unit file
 
@@ -135,10 +222,43 @@ Building GSConnect runs meson install. Because `desktop-file-utils` is not
 published by Hummingbird or Utah's repository, `scripts/build-gnome-extensions.sh`
 disables GSConnect's `update_desktop_database` meson post-install hook to avoid
 failing on the missing utility. MIME and schema databases are handled by the
-system and glib-compile-schemas. Additionally, `scripts/build-gnome-extensions.sh`
-guards `src/shell/clipboard.js` against GNOME 48+ final GTypes: wrapping
-`GSConnectShellClipboard` registration in a try/catch prevents module load failures
-on `GjsPrivate.DBusImplementation`, gracefully degrading to an inert portal on GNOME 51.
+system and glib-compile-schemas.
+
+Declaring GNOME 51 in `metadata.json` is necessary, not sufficient: both
+failures below passed the metadata check, built cleanly, and only showed up
+in a booted session's journal (`journalctl _UID=1000 | grep -i extension`).
+
+- **GSConnect** tracks upstream `GSConnect/gnome-shell-extension-gsconnect`
+  at `v73`. Earlier GSConnect subclassed `GjsPrivate.DBusImplementation`, a
+  final GType since GNOME 48, in `shell/clipboard.js`, `wl_clipboard.js` and
+  `service/utils/dbus.js`. Utah once text-patched only the first, so the
+  daemon still threw "Cannot inherit from a final type" on every login and
+  GSConnect never started. v73 stopped subclassing it (upstream 11be9b7f); the
+  build now greps the whole `src/` tree and fails if a subclass returns. The
+  `projectbluefin` fork it used to track only added the GNOME 51 declaration,
+  which upstream carries itself.
+- **Dash to Dock** is pinned to the v109 release commit on `master` (upstream
+  publishes no `extensions.gnome.org-v1xx` branch past v106). v106 imports
+  `resource:///org/gnome/shell/ui/pointerWatcher.js`, which GNOME 51 removed,
+  so the dock silently never loaded; upstream 38545156 moved it to
+  `Meta.CursorTracker`.
+
+`tests/test_gnome_extensions.py` reads the pinned sources for both, so a pin
+moved back to an affected revision fails `just check`. To validate an
+extension bump without an image build, copy the built tree over the installed
+one on a booted VM under `bootc usr-overlay`, restart `gdm`, and read the
+session journal and `gnome-extensions info <uuid>` (`State: ACTIVE`).
+
+## The OS logo is an os-release key
+
+GNOME Initial Setup's welcome page and Settings > About show the
+icon named by os-release `LOGO`. Fedora sets `LOGO=fedora-logo-icon` and
+Bluefin keeps it; common overlays the raptor at
+`/usr/share/pixmaps/fedora-logo-icon.png`. Hummingbird's os-release has no
+`LOGO`, so Utah showed the generic GNOME foot with the raptor already on disk.
+`configure-branding.sh` sets it, and the contract asserts both the key and the
+icon file. To check without a build: `bootc usr-overlay`, append the key to
+`/usr/lib/os-release`, `systemctl restart gdm`, and look at Initial Setup.
 
 ## The GDM greeter logo is Bluefin, not Fedora (#378)
 
@@ -206,6 +326,21 @@ Hummingbird's base does not include `systemd-resolved` by default; it is listed
 under `[services]` in `packages/utah.toml` and configured in
 `scripts/configure-services.sh`, which also disables `PrivateTmp` on
 `systemd-resolved.service` for bootc early-boot DNS resolution.
+
+### Discovery and hybrid-GPU services (#387)
+
+Keep build-time enablement in `scripts/configure-services.sh` aligned with
+`85-utah-desktop.preset`: the script configures the image and the preset
+preserves the policy when first-boot presets are applied. Bluefin's
+`enable avahi-daemon.*` covers both the service and socket for mDNS discovery;
+list both explicitly in the script and preset. `switcheroo-control.service`
+supports launching applications on a discrete GPU. `switcheroo-control` is
+already in the copied Bluefin package contract; Avahi's client libraries
+are not the daemon, so `[services]` in `packages/utah.toml` explicitly
+requests `avahi` (#104). Require the full pinned-repository transaction to
+resolve before building. The desktop contract checks all three units with
+`systemctl is-enabled` in the composed image; discovery and discrete-GPU
+launching still need runtime verification on the relevant network/hardware.
 
 ### The serial getty is masked (#103)
 
@@ -294,9 +429,12 @@ or a CI artifact can be checked after the fact (recipe comment, `Justfile`,
   The extension verifier runs earlier in the same step.
 - **On demand** — `just check-desktop-contract <ref>` (default
   `localhost/utah:testing`) podman-runs both verifiers inside an
-  already-composed image: the desktop verifier and the contract are
-  bind-mounted from the working tree, the extension verifier runs from the
-  image's own `/usr/local/libexec`.
+  already-composed image: both verifiers and the desktop contract are
+  bind-mounted read-only from the working tree under `/tmp`. The extension
+  verifier uses installed mode to check the image's bundled extensions.
+  Build-time helpers under `/usr/local/libexec` are unavailable after
+  `clean-stage.sh` removes `/var/usrlocal` (the target of `/usr/local`), so
+  on-demand checks must not depend on those helpers surviving cleanup.
 - **Off-image** — `verify-desktop-contract.py --check` validates the contract
   TOML itself in source-only CI and is part of `just check`; it asserts
   nothing about any image.

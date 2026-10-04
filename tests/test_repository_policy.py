@@ -202,6 +202,23 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             errors = verifier.verify_runtime_repository_policy(policy(), root=root)
         self.assertTrue(any("unpinned baseurl" in error for error in errors), errors)
 
+    def test_runtime_expands_architecture_in_configured_reposdir(self) -> None:
+        with patch.object(verifier.os, "uname",
+                          return_value=os.uname_result(("", "", "", "", "x86_64"))):
+            errors = self.runtime_errors({
+                "etc/dnf/dnf.conf": "[main]\nreposdir=/custom/$basearch\n",
+                "custom/x86_64/leak.repo": "[fedora]\nenabled=1\n",
+            })
+        self.assertTrue(any("Fedora" in error and "leak.repo" in error for error in errors), errors)
+
+    def test_runtime_rejects_unresolved_reposdir_variables(self) -> None:
+        for value in ("$releasever", "${releasever:-44}"):
+            with self.subTest(value=value):
+                errors = self.runtime_errors({
+                    "etc/dnf/dnf.conf": f"[main]\nreposdir=/custom/{value}\n",
+                })
+                self.assertTrue(any("unresolvable variable" in error for error in errors), errors)
+
     def test_shipped_manifest_and_repository_files_pass_offline_policy_check(self) -> None:
         self.assertEqual(
             verifier.verify_repository_policy_from_manifest(

@@ -4,9 +4,16 @@
 Beyond package presence, this is the supply-chain attestation for issue #21:
 GNOME packages carry the promised major version and an approved factory
 (`.bfin`) or Hummingbird (`.hum`) identity; parity packages cannot silently
-resolve from an unapproved Fedora repository; the system exposes only the
-runtime repositories the manifest allows; and the resolved package-origin/NEVRA
-set is retained as a report with build provenance.
+resolve from an unapproved Fedora repository; the composed image exposes only
+the runtime repositories the manifest allows; and the resolved
+package-origin/NEVRA set is retained as a report with build provenance.
+
+`--check` validates the manifest itself off-image: the `.repo` files in
+`packages/` may name only the repositories the manifest allows. The on-image
+run applies the same allowlist to the composed image's runtime RPM
+repositories -- every `reposdir` dnf5 reads at runtime, derived from the
+[main] config the base image ships rather than a hardcoded default (#454,
+#513, #536).
 
 Mirrors assert_packages_present from projectbluefin/bluefin's
 build_files/shared/package-lib.sh: name every missing package, once.
@@ -74,6 +81,34 @@ class RepositoryPolicy(NamedTuple):
 
 
 
+# Where the composed image's runtime RPM repositories live by default. --check
+# works against the source repo files in packages/; the on-image run scans the
+# paths dnf5 actually reads. dnf5 loads every one of these when it resolves
+# packages, so scanning only /etc/yum.repos.d left a repo file the base ships
+# in another default reposdir enabled at runtime yet invisible to the gate
+# (#513). A base image can also override this default via `reposdir=` in
+# /etc/dnf/dnf.conf or a libdnf5 drop-in (see dnf5_config_files), which replaces the
+# default list (#536): a config that sets reposdir to one custom path bypasses
+# the allowlist if this script only scans the hardcoded defaults.
+DEFAULT_REPOS_DIRS: tuple[Path, ...] = (
+    Path("/etc/yum.repos.d"),
+    Path("/etc/distro.repos.d"),
+    Path("/usr/share/dnf5/repos.d"),
+)
+# Where dnf5 looks for its [main] configuration: the drop-ins in
+# /etc/dnf/libdnf5.conf.d and /usr/share/dnf5/libdnf.conf.d (merged by file
+# name, /etc masking /usr/share, applied in file-name order), then
+# /etc/dnf/dnf.conf; options from later files override earlier ones.
+# runtime_reposdir_paths reads `reposdir=` from the same files, so the on-image
+# scan honours the actual list dnf5 uses at runtime.
+DNF_DISTRO_CONF_D = Path("/usr/share/dnf5/libdnf.conf.d")
+DNF_USER_CONF_D = Path("/etc/dnf/libdnf5.conf.d")
+DNF_MAIN_CONF = Path("/etc/dnf/dnf.conf")
+FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
+
+DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
+
+
 def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
     """A named package list from an overlay manifest, in the order written.
 
@@ -84,6 +119,140 @@ def section(overlay: Path, name: str, key: str = "packages") -> list[str]:
     if name not in data or key not in data[name]:
         return []
     return list(data[name][key])
+
+
+def dnf5_config_files() -> list[Path]:
+    """The dnf5 [main] config files in load order (later wins).
+
+    Mirrors libdnf5 Base::load_config: the drop-in dirs
+    /etc/dnf/libdnf5.conf.d and /usr/share/dnf5/libdnf.conf.d are merged by
+    file name, a file in /etc masking a same-named file in /usr/share, and the
+    union is applied sorted by file name (not by directory). /etc/dnf/dnf.conf
+    is applied last. Getting this order wrong would let the gate resolve a
+    different `reposdir=` than dnf5 does (#536).
+    """
+    by_name: dict[str, Path] = {}
+    for conf_dir in (DNF_USER_CONF_D, DNF_DISTRO_CONF_D):
+        if not conf_dir.is_dir():
+            continue
+        for p in sorted(conf_dir.glob("*.conf")):
+            if p.is_file() and p.name not in by_name:
+                by_name[p.name] = p
+    paths = [by_name[name] for name in sorted(by_name)]
+    paths.append(DNF_MAIN_CONF)
+    return paths
+
+
+class Dnf5ConfigError(Exception):
+    """A dnf5 [main] config the gate cannot resolve the way dnf5 does."""
+
+
+# Arches whose rpm `$arch` equals dnf5's `$basearch`, so both can be substituted
+# from the running machine without reimplementing libdnf5's arch map.
+_IDENTITY_BASEARCHES: frozenset[str] = frozenset(
+    {"x86_64", "aarch64", "ppc64le", "s390x", "riscv64"}
+)
+_DNF_VAR_RE = re.compile(r"\$(?:\{(?P<braced>\w+)\}|(?P<bare>\w+))")
+# libdnf5 also accepts `${var:-default}` and `${var:+alt}`; raise on any
+# braced form whose body is not `\w+` so the gate does not silently scan
+# the literal `${...}` substring dnf5 would have resolved differently
+# (#540 review).
+_DNF_VAR_UNKNOWN_RE = re.compile(r"\$\{(?P<body>[^}]*)\}")
+
+
+def _substitute_dnf_vars(value: str, path: Path) -> str:
+    """Expand `$basearch`/`$arch` in a [main] value as libdnf5 would.
+
+    libdnf5 runs its variable substitution on every [main] value. Any other
+    variable ($releasever, custom vars from vars.d, ...) cannot be resolved
+    here with certainty, so it raises rather than scanning a literal path dnf5
+    never reads.
+    """
+    machine = os.uname().machine
+    known = {"arch": machine, "basearch": machine} if machine in _IDENTITY_BASEARCHES else {}
+
+    def repl(match: re.Match[str]) -> str:
+        name = match.group("braced") or match.group("bare")
+        if name not in known:
+            raise Dnf5ConfigError(
+                f"dnf5 config {path} sets reposdir with unresolvable variable ${name}"
+            )
+        return known[name]
+
+    # Reject `${var:-default}` / `${var:+alt}` (and any other non-identifier
+    # braced body) up front so the substitution below never passes a literal
+    # `${...}` substring through unchanged when libdnf5 would have expanded
+    # it via its own default/alternate-value rules.
+    for unknown in _DNF_VAR_UNKNOWN_RE.finditer(value):
+        body = unknown.group("body")
+        if not re.fullmatch(r"\w+", body):
+            raise Dnf5ConfigError(
+                f"dnf5 config {path} sets reposdir with unresolvable "
+                f"variable ${{{body}}}"
+            )
+
+    return _DNF_VAR_RE.sub(repl, value)
+
+
+def parse_reposdir_from_config(config_files: list[Path]) -> list[Path] | None:
+    """The reposdir list the latest [main] config wins with, or None.
+
+    Returns the last non-empty `reposdir=` value found, which is what dnf5
+    resolves at runtime (the docs say the later file's option wins). Returns
+    None if no config sets the option, so the caller can fall back to the
+    documented default. Duplicate keys and sections are accepted with the last
+    value winning, as libdnf5's parser does. A config that exists but cannot be
+    read or parsed raises Dnf5ConfigError: dnf5 itself aborts on such a file,
+    and skipping it would silently widen the gate back to the defaults.
+    Inline `#` text is not stripped, so `reposdir=/opt/x # note` scans the
+    extra (nonexistent) entries too -- a harmless superset.
+    """
+    configured: list[Path] | None = None
+    for path in config_files:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as err:
+            raise Dnf5ConfigError(f"could not read dnf5 config {path}: {err}") from err
+        # libdnf5 is case-sensitive on option keys and accepts only `=` as
+        # the delimiter (`reposdir` ≠ `Reposdir:`). configparser defaults to
+        # a case-insensitive `optionxform=str.lower` and treats `:` as a
+        # delimiter, so `Reposdir:` would be honoured here but ignored at
+        # runtime; pin the same case sensitivity and delimiter set libdnf5
+        # uses so the gate reads what dnf5 reads (#540 review).
+        parser = configparser.ConfigParser(
+            interpolation=None,
+            strict=False,
+            delimiters=("=",),
+        )
+        parser.optionxform = str
+        try:
+            parser.read_string(text, source=str(path))
+        except configparser.Error as err:
+            raise Dnf5ConfigError(f"could not parse dnf5 config {path}: {err}") from err
+        if not parser.has_section("main"):
+            continue
+        raw = parser.get("main", "reposdir", fallback="").strip()
+        if not raw:
+            continue
+        raw = _substitute_dnf_vars(raw, path)
+        configured = [Path(p) for p in re.split(r"[\s,]+", raw) if p]
+    return configured
+
+
+def runtime_reposdir_paths() -> list[Path]:
+    """The reposdir paths dnf5 actually scans at runtime.
+
+    Reads every dnf5 [main] config in load order; if any sets `reposdir=`,
+    that list replaces the documented default. Falls back to the default
+    `DEFAULT_REPOS_DIRS` when no config opts in (#536): a base image that
+    configures a custom reposdir would otherwise slip a `.repo` file past the
+    allowlist gate that scans only the three defaults. Raises Dnf5ConfigError
+    when a config cannot be resolved, so the caller fails the gate closed.
+    """
+    configured = parse_reposdir_from_config(dnf5_config_files())
+    return list(configured) if configured is not None else list(DEFAULT_REPOS_DIRS)
 
 
 def is_installed(package: str) -> bool:
@@ -442,7 +611,7 @@ def verify_repository_policy(
             continue
         errors.extend(
             check_repo_sections(
-                parser, repo_file.name, allowed_repos,
+                parser, str(repo_file), allowed_repos,
                 expected_baseurls=expected_baseurls,
                 expected_security=expected_security,
             )
@@ -478,7 +647,10 @@ def apply_dnf_options(target: dict[str, str], options: dict[str, str], gpg_polic
         target["repo_gpgcheck"] = target["gpgcheck"]
 
 
-def verify_runtime_repository_policy(policy: RepositoryPolicy, *, root: Path = Path("/")) -> list[str]:
+def verify_runtime_repository_policy(
+    policy: RepositoryPolicy, *, root: Path = Path("/"),
+    repos_dirs: list[Path] | None = None,
+) -> list[str]:
     """Attest effective DNF5 defaults, main inheritance, and final wildcard overrides.
 
     Load order follows libdnf5 Base::load_config and RepoSack's system config:
@@ -488,7 +660,8 @@ def verify_runtime_repository_policy(policy: RepositoryPolicy, *, root: Path = P
     errors: list[str] = []
 
     def parse(path: Path) -> configparser.ConfigParser:
-        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser = configparser.ConfigParser(interpolation=None, strict=False, delimiters=("=",))
+        parser.optionxform = str
         try:
             parser.read_string(path.read_text(encoding="utf-8"))
         except (OSError, configparser.Error) as error:
@@ -508,14 +681,15 @@ def verify_runtime_repository_policy(policy: RepositoryPolicy, *, root: Path = P
             apply_dnf_options(main, options, options.get("gpgcheck_policy", main["gpgcheck_policy"]))
     if main["proxy"].strip():
         errors.append("A DNF-wide proxy is configured; proxies are not approved")
-    dirs = list(DEFAULT_REPOSDIRS)
-    if "reposdir" in main:
-        dirs = [p for p in re.split(r"[\s,]+", main["reposdir"].strip()) if p]
+    if repos_dirs is None:
+        try:
+            configured = parse_reposdir_from_config(config_files)
+        except Dnf5ConfigError as error:
+            return [str(error)]
+        dirs = configured if configured is not None else list(DEFAULT_REPOS_DIRS)
+        repos_dirs = [root / str(directory).lstrip("/") for directory in dirs]
     files = [dnf_conf] if dnf_conf.is_file() else []
-    for directory in dirs:
-        path = root / directory.lstrip("/")
-        if root == Path("/") and directory == "etc/yum.repos.d":
-            path = RUNTIME_REPOS_DIR
+    for path in repos_dirs:
         files.extend(sorted(path.glob("*.repo")))
 
     def substitute(value: str) -> str:
@@ -793,10 +967,20 @@ def main() -> int:
 
     policy, repo_errors = read_repository_policy(overlay)
     if policy is not None and not repo_errors:
-        repo_errors = (verify_repository_policy(
-            args.manifest.parent, set(policy.allowed), expected_baseurls=policy.baseurls,
-            expected_security=policy.options, check_mode=True,
-        ) if args.check else verify_runtime_repository_policy(policy, root=RUNTIME_ROOT))
+        if args.check:
+            repo_errors = verify_repository_policy(
+                args.manifest.parent, set(policy.allowed), expected_baseurls=policy.baseurls,
+                expected_security=policy.options, check_mode=True,
+            )
+        else:
+            try:
+                repos_dirs = runtime_reposdir_paths()
+            except Dnf5ConfigError as error:
+                repo_errors = [str(error)]
+            else:
+                repo_errors = verify_runtime_repository_policy(
+                    policy, root=RUNTIME_ROOT, repos_dirs=repos_dirs,
+                )
     if repo_errors or policy is None:
         for error in repo_errors:
             print(f"ERROR: {error}", file=sys.stderr)

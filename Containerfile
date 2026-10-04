@@ -1,14 +1,14 @@
-ARG BASE_IMAGE=quay.io/hummingbird-community/bootc-os:latest@sha256:daf48812bbc0f0a73d41a0e4a91a8f49277332e8450ec9510fd73cad6c19cf99
+ARG BASE_IMAGE=quay.io/hummingbird-community/bootc-os:latest@sha256:f7d105f3a84222deda796f0a7aee5d0d2edc04bcf2232ce92aa55fea0919dd79
 # The package factory publishes a complete, digest-addressable RPM repository.
 # Keep this pin in Utah so an image build is reproducible and can be reviewed
 # against the exact package set it consumes.
 ARG PACKAGE_IMAGE=ghcr.io/projectbluefin/utah-packages
-ARG PACKAGE_IMAGE_SHA=sha256:0f04cff2dd0b085604ff3cd79d538ab14b97cbe356980f7d365a35dfc70c857b
+ARG PACKAGE_IMAGE_SHA=sha256:4caa79e1a2eec845e18550af20d9ed14d30231a78f68d1f1e439f960ace496a3
 # CI keeps PACKAGE_IMAGE_SHA pinned. PACKAGE_IMAGE_REF supports a local image
 # in containers-storage, where no registry digest is available.
 ARG PACKAGE_IMAGE_REF=${PACKAGE_IMAGE}@${PACKAGE_IMAGE_SHA}
 ARG COMMON_IMAGE=ghcr.io/projectbluefin/common
-ARG COMMON_IMAGE_SHA=sha256:360450d64699f2baf0e4b17c9c36e0925bb1d92d0b88447ba894e98d32461c36
+ARG COMMON_IMAGE_SHA=sha256:a8969625fcfa333a28c8b6f59f69fc286c9218fb2ec1cac9de82f710bd283772
 ARG BREW_IMAGE=ghcr.io/ublue-os/brew
 ARG BREW_IMAGE_SHA=sha256:bc6f5a9fc4f28cded2fe567b31f74825c1f4481d5e43c537c3fcc0d3df6d22ab
 
@@ -174,7 +174,18 @@ RUN --mount=type=bind,from=v4l2loopback,source=/out,target=/tmp/utah-v4l2loopbac
 # The package lists live in the manifests, not here.  When they were spelled
 # out in this RUN as well, the two copies drifted and the contract check was
 # asserting a different set than the install had asked for.
+# Hummingbird's repository is not pinned: it is a rolling distribution and
+# Utah takes its packages as they publish. But nothing in this layer's cache
+# key moved when they did -- the manifests, the repo files and the factory
+# stamp all stay put -- so the registry layer cache served the same
+# transaction night after night, and new Hummingbird RPMs reached testing only
+# when a base-image bump happened to bust it. `just build-ghcr` passes the UTC
+# day of the repository's repomd <revision> (a publish timestamp), so the
+# transaction picks up new Hummingbird packages once a day and same-day builds
+# still share the cached layer. Local builds leave it unset.
+ARG HUMMINGBIRD_REPO_DAY=unset
 RUN --mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages,ro \
+    echo "Hummingbird repository day: ${HUMMINGBIRD_REPO_DAY}" && \
     /usr/local/libexec/utah-install-packages \
       /usr/share/utah/bluefin.toml /usr/share/utah/utah.toml && \
     IMAGE_FLAVOR=main /usr/local/libexec/utah-verify-rpm-contract \

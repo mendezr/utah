@@ -1,7 +1,7 @@
 ---
 name: package-contract
-version: "1.0"
-last_updated: "2026-10-02"
+version: "1.1"
+last_updated: "2026-10-03"
 id: package-contract
 one_line_purpose: Maintain Bluefin package parity and Utah's overlay manifest.
 entry_point: docs/skills/package-contract.md
@@ -12,10 +12,10 @@ status: active
 dependencies: []
 tags: [packages, parity, bluefin, contracts]
 description: >-
-  Bluefin parity contract (verbatim bluefin.toml), utah.toml overlay, device
-  firmware, [unavailable] rules, repository policy (on-image /etc/yum.repos.d
-  scan), and supply-chain attestation. Add, remove, or debug packages or
-  parity/check-repo failures.
+  Bluefin parity contract: verbatim bluefin.toml, utah.toml overlay, device
+  firmware, [unavailable] rules, repository policy (on-image reposdir
+  scan). Use when adding, removing,
+  or debugging packages or parity/check-repos failures.
 metadata:
   type: policy
 ---
@@ -108,7 +108,7 @@ Runtime repositories are the pinned `utah-packages` repository (listed first)
 plus Hummingbird's own repository only. **Fedora repositories are never
 enabled at runtime** — they are bootstrap material for the package factory's
 buildroot, not a source of installed packages (Containerfile package-RUN
-comment, `Containerfile` ~L94; repo files copied at `Containerfile` L40).
+comment, `Containerfile` ~L168; repo files copied at `Containerfile` L59).
 `Containerfile.kernel`'s builder stage may use the pinned Fedora 44 repository
 (`packages/fedora-44.repo`) strictly as a builder-only toolchain.
 
@@ -123,7 +123,9 @@ precede base Hummingbird packages (`priority=10`). Repositories without this mar
 the desktop package transaction.
 
 The pinned package image is an RPM repository, not a runtime dependency. It is
-bind-mounted into the RUN steps that install from it (`Containerfile` L61-69)
+bind-mounted into the package-contract and flavor-specific install RUN steps in
+[`Containerfile`](../../Containerfile), both identified by
+`--mount=type=bind,from=packages,source=/repository,target=/etc/utah-packages,ro`,
 and never copied into a layer: a COPY of the whole ~4 GB repository would leave
 a permanent layer behind, so reproducibility now comes from the digest-pinned
 `packages` stage being the only source the package transaction can see rather
@@ -153,8 +155,11 @@ install-set check it attests the supply chain the image is composed from
   origin, including the disabled NVIDIA repository. Proxy/TLS drift on an
   allowlisted repo is rejected. A `# builder-only: true` file is skipped only
   when the Containerfile copies it into a builder and never the final stage.
-  `--check` scans `packages/*.repo`; on-image verification scans the real
-  `/etc/yum.repos.d` with no builder exemptions, including inherited files.
+  `--check` scans `packages/*.repo`; on-image verification scans every
+  configured `reposdir` with no builder exemptions, including inherited files.
+  Preserve the fail-closed reposdir parser when merging base changes: it uses
+  case-sensitive `=` keys, expands supported architecture variables, and
+  rejects unresolved variables rather than silently scanning literal paths.
   The exact pinned base (`sha256:ddf19cc52fccb9ad4819b0fb9289f26912894c95555ccb4e95dc38e1dab4dc12`)
   was inspected: it ships only `hummingbird.repo` there, with
   `[public-hummingbird-$basearch-rpms]` and the `/public-hummingbird/$arch/`
@@ -194,6 +199,28 @@ install-set check it attests the supply chain the image is composed from
   otherwise `timestamp` is null and `timestamp_source` is `unset`. A sentinel
   epoch used to be stamped instead, which asserted a build date that was never
   true.
+
+## Printing and scanning gaps
+
+CUPS and its driverless IPP support do not supply the full printing/scanning
+stack (#390). `bluez-cups` belongs in `[parity]`: the factory publishes it as
+a separate Bluetooth printer backend, and installing CUPS alone does not
+request it. It requires the matching `bluez` build, so validate the full
+transaction with `just check-repos` when changing this entry.
+
+The factory pin inspected for #390's audit had no packages for the remaining
+families: `system-config-printer`, `hplip`, `sane-backends`,
+`sane-airscan`/`libsane-airscan`, `libsane-hpaio`, `ipp-usb`, `gutenprint`,
+`foo2zjs`, `c2esp`, `dymo-cups-drivers`, `printer-driver-brlaser`,
+`ptouch-driver`, `splix`, `braille-printer-app`, `paps`, and `mpage`.
+Recheck the current Containerfile pin before adding them: they need factory
+publication and dependency closure, not Fedora runtime repositories.
+Prioritize the printer configuration tool, HP support and AirScan as
+requested in #390, then resolve the published RPM names and their
+dependencies against the pinned inputs. A metadata name match is only a
+preflight: require transaction resolution, then verify printer
+discovery/setup and scanning on hardware before claiming the cluster works.
+Keep #390 open until the remaining work is covered.
 
 ## Supply-chain download verification
 
@@ -273,7 +300,7 @@ default branch, preventing unrelated upstream changes from breaking Utah's CI.
 Update it whenever synchronizing `packages/bluefin.toml` with upstream.
 
 Current counts, per the README "Package parity" section: 61 Bluefin contract
-packages installed, 88 Utah additions (GNOME 51, base-image parity, device
+packages installed, 105 Utah additions (GNOME 51, base-image parity, device
 firmware, desktop services), 7 genuinely unavailable. `scripts/check-doc-counts.py` (part of
 `just check`) recomputes these from the manifests and fails if either
 document drifts from `site/data/packages.json`.
@@ -301,6 +328,20 @@ does not (`baselines/GAP.md`). It does not say *where* the missing name
 could come from, only that it is missing. That gap was the 2026-09-30
 bare-metal audit (#382): `rpm -qa` both images, `comm` the difference,
 then partition each gap name by which repository could supply it.
+
+The `EXTRACT` script inside that tool globs a closed list of user-visible
+paths (applications, autostarts, sessions, systemd units, `/usr/bin`,
+`/usr/sbin`) and the Bluefin firefox-config defaults
+(`/usr/share/ublue-os/firefox-config/*`, #502). The glob is `*`, not
+`*.js`, because `99-flatpaks.sh` copies the whole directory: a narrower
+pattern would let a non-`.js` file ship unseen. Adding a path means
+adding a glob AND a `KINDS` entry so `write_report()` can classify the
+new rows. `GapTests` in `tests/test_image_baseline.py` exercises missing
+Firefox defaults in the report and recognizes an unowned overlay as shipped.
+For extraction proof, run `extract IMAGE /tmp/surface-check` against a real
+image and inspect the Firefox rows and asset contents; source-string checks
+cannot establish shipping. Never append rows measured from a newer image to
+an older snapshot: `image.txt` must describe the same image as both TSVs.
 
 `scripts/audit-bluefin-parity.py` is the re-runnable version of that
 pipeline. Every name Bluefin ships that Utah does not install (and does
@@ -343,6 +384,16 @@ gate can meaningfully run. A stale-baseline verdict is reported before any
 partition-growth message, so it is never masked by a growth report, and the
 failing summary line names the stale baseline rather than claiming the
 partitions grew.
+The baseline also records the Hummingbird repo `baseurl` it was captured
+against. A Hummingbird repo URL change moves packages between the
+Hummingbird and factory repodata the audit reads, shifting
+`hummingbird-available` without any name actually being added or
+removed, so the partition diff alone would read "no growth". The check
+compares the current `baseurl` to the recorded one first and reports a
+mismatch as a stale baseline before the partition diff, so the verdict
+is never masked by a growth report; a baseline written before the key
+existed is not invented into a mismatch. Rewrite the baseline against
+the new repo with `just audit-bluefin-parity --write`.
 
 Bootstrap is a one-time manual command: on a fresh checkout where
 `baselines/audit-baseline.json` is missing, `just check-audit-parity`
