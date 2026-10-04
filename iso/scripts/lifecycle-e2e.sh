@@ -155,6 +155,15 @@ ssh_target_sudo() {
     printf '%s\n' "${TEST_PASSWORD}" | ssh_target "sudo -S -p '' -- ${command}"
 }
 
+verify_boot_files() {
+    local phase="$1" checker
+    checker="$(< "${ROOT}/iso/scripts/verify-boot-files.sh")"
+    # sudo stdin carries the password, so send the checker as a quoted bash -c
+    # argument. Preserve guest output even when a file or SSH check fails.
+    ssh_target_sudo bash -c "${checker}" > "${EVIDENCE}/boot-files-${phase}.txt" 2>&1 \
+        || diagnose_failure "Kernel/initrd file validation failed (${phase}); see boot-files-${phase}.txt"
+}
+
 lifecycle_helper() {
     python3 "${ROOT}/scripts/bootc_lifecycle.py" "$@"
 }
@@ -468,6 +477,7 @@ ACTIVE_DIGEST="${BASELINE_DIGEST}"
 python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase baseline \
     --status "${WORK}/baseline-status.json" \
     || diagnose_failure "Baseline deployment validation failed"
+verify_boot_files baseline
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -525,6 +535,9 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase staged \
     --baseline-digest "${BASELINE_DIGEST}" \
     --candidate-image "${TARGET_IMAGE}" \
     || diagnose_failure "Staged deployment validation failed"
+# Finalization publishes the staged entry at shutdown; only published entries
+# must have their files now. The upgraded/rollback gates run after reboot.
+verify_boot_files staged
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -561,6 +574,7 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase upgraded \
     --baseline-digest "${BASELINE_DIGEST}" \
     --candidate-digest "${EXPECTED_DIGEST}" \
     || diagnose_failure "Upgraded deployment validation failed"
+verify_boot_files upgraded
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \
@@ -599,6 +613,7 @@ python3 "${ROOT}/scripts/bootc_lifecycle.py" validate-phase rollback \
     --status "${WORK}/rollback-status.json" \
     --baseline-digest "${BASELINE_DIGEST}" \
     || diagnose_failure "Rollback verification failed"
+verify_boot_files rollback
 
 python3 "${ROOT}/scripts/bootc_lifecycle.py" record-diagnostics \
     --output-dir "${EVIDENCE}" \

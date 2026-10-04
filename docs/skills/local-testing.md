@@ -353,6 +353,19 @@ baseline digest.
 Phase-keyed diagnostics (`evidence/lifecycle-*.json`, `lifecycle-summary.json`)
 and screendumps identify the active deployment and digest at every phase.
 
+Each phase also runs `iso/scripts/verify-boot-files.sh` as root in the guest
+and saves `evidence/boot-files-<phase>.txt`. For every published OSTree BLS
+Type #1 entry, `linux` and every repeated `initrd` directive must reference a
+nonempty regular file on the **same ESP/XBOOTLDR filesystem as the entry**.
+A BLS `/ostree/...` path is partition-relative, not relative to the guest's
+`/` or the harness host; do not satisfy it from a different mounted partition.
+Missing directives, missing files, and an empty entry set fail the phase.
+The staged phase checks only already published entries: the pending deployment's
+entry/files are published during shutdown finalization and checked after reboot.
+This file gate complements deployment-to-entry matching (issue #361 / PR #571);
+it does not itself prove which deployment an entry represents. Fixture tests
+run the same guest checker via `python3 -m unittest discover -s tests -p test_boot_files.py`.
+
 The baseline image (default `ghcr.io/projectbluefin/utah:testing`, the target
 ref `just iso testing` builds with) is the ref a live ISO installs its offline
 payload under, and phase 1 fails unless the booted deployment tracks it. The
