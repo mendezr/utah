@@ -538,8 +538,8 @@ allowed = ["public-hummingbird-x86_64-rpms", "utah-packages", "nvidia-container-
 # The exact origin each allowlisted repository serves. verify-rpm-contract.py
 # fails a build that enables an allowlisted repository with a different baseurl,
 # a metalink/mirrorlist (which DNF merges with any baseurl the section declares),
-# or no baseurl at all -- and rejects proxy= or sslverify=0 on an allowlisted
-# repository, which reroute or weaken the fetch.
+# or no baseurl at all. Effective gpgcheck, repo_gpgcheck, sslverify, and proxy
+# must also match [repositories.security], including signature-check exceptions.
 [repositories.baseurls]
 public-hummingbird-x86_64-rpms = ["https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/"]
 utah-packages = ["file:///etc/utah-packages"]

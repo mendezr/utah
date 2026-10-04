@@ -24,18 +24,17 @@ from __future__ import annotations
 import argparse
 import configparser
 import datetime
+import fnmatch
 import json
 import os
-import re
-import fnmatch
 import platform
+import re
 import shlex
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import NamedTuple
-from typing import Any
+from typing import Any, NamedTuple
 
 # The NVIDIA userspace no longer arrives as RPMs. UBlue's akmods bundle used to
 # supply nvidia-driver, nvidia-driver-cuda and nvidia-container-toolkit, but it
@@ -58,15 +57,7 @@ DEFAULT_REPORT_DIR = "/usr/share/utah"
 # is what the report quotes: it says which package factory the NEVRAs came from
 # without needing a build argument plumbed through every stage.
 FACTORY_REPO_PATH = "/etc/yum.repos.d/utah-packages.repo"
-# Where the composed image's runtime RPM repositories live. --check works
-# against the source repo files in packages/; the on-image run scans this
-# directory so repo files shipped by the Hummingbird base image are subject
-# to the same allowlist as the ones Utah itself copies in (#454).
-RUNTIME_REPOS_DIR = Path("/etc/yum.repos.d")
 RUNTIME_ROOT = Path("/")
-FACTORY_PIN_RE = re.compile(r"^# factory-pin: (?P<digest>\S+)\s*$", re.MULTILINE)
-
-DISABLED_VALUES: frozenset[str] = frozenset({"0", "false", "no", "off"})
 
 REQUIRED_SECURITY_OPTIONS = frozenset(
     {"gpgcheck", "repo_gpgcheck", "sslverify", "proxy"}
@@ -77,8 +68,6 @@ class RepositoryPolicy(NamedTuple):
     allowed: frozenset[str]
     baseurls: dict[str, tuple[str, ...]]
     options: dict[str, dict[str, str]]
-
-
 
 
 # Where the composed image's runtime RPM repositories live by default. --check
@@ -511,15 +500,12 @@ def check_repo_sections(
     source: str,
     allowed_repos: set[str],
     *,
-    skip_sections: frozenset[str] = frozenset(),
     expected_baseurls: dict[str, tuple[str, ...]] | None,
     expected_security: dict[str, dict[str, str]] | None = None,
 ) -> list[str]:
     """Apply the allowlist to every section of an already-parsed config."""
     errors: list[str] = []
     for section_name in parser.sections():
-        if section_name in skip_sections:
-            continue
         if not is_repo_enabled(parser.get(section_name, "enabled", fallback="1")):
             if section_name in allowed_repos:
                 errors.extend(repo_security_option_errors(section_name, parser, source, expected_security))
@@ -617,9 +603,6 @@ def verify_repository_policy(
             )
         )
     return errors
-
-
-DEFAULT_REPOSDIRS = ("etc/yum.repos.d", "etc/distro.repos.d", "usr/share/dnf5/repos.d")
 
 
 def normalize_repo_option(name: str, value: str) -> str:
@@ -788,15 +771,23 @@ def read_repository_policy(
     return RepositoryPolicy(frozenset(names), pins, options), []
 
 
-def verify_repository_policy_from_manifest(overlay: Path, *, check_mode: bool) -> list[str]:
-    policy, errors = read_repository_policy(overlay)
-    if errors or policy is None:
-        return errors
+def verify_repository_policy_from_manifest(
+    overlay: Path, *, check_mode: bool, policy: RepositoryPolicy | None = None,
+) -> list[str]:
+    if policy is None:
+        policy, errors = read_repository_policy(overlay)
+        if errors or policy is None:
+            return errors
     if check_mode:
-        return verify_repository_policy(overlay.parent, set(policy.allowed), expected_baseurls=policy.baseurls, expected_security=policy.options, check_mode=True)
-    return verify_runtime_repository_policy(policy, root=RUNTIME_ROOT)
-
-
+        return verify_repository_policy(
+            overlay.parent, set(policy.allowed), expected_baseurls=policy.baseurls,
+            expected_security=policy.options, check_mode=True,
+        )
+    try:
+        repos_dirs = runtime_reposdir_paths()
+    except Dnf5ConfigError as error:
+        return [str(error)]
+    return verify_runtime_repository_policy(policy, root=RUNTIME_ROOT, repos_dirs=repos_dirs)
 
 
 def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str | None, str]:
@@ -829,7 +820,7 @@ def resolve_build_timestamp(environ: dict[str, str] | None = None) -> tuple[str 
 def read_factory_pin(repo_file: Path = Path(FACTORY_REPO_PATH)) -> str | None:
     """The package factory digest stamped into the pinned repository file.
 
-    `scripts/bump-factory-pin.py` moves this stamp together with the
+    Renovate's grouped factory-pin update moves this stamp together with the
     Containerfile's `ARG PACKAGE_IMAGE_SHA`, so it names the exact factory image
     the contract's NEVRAs were installed from.
     """
@@ -967,20 +958,9 @@ def main() -> int:
 
     policy, repo_errors = read_repository_policy(overlay)
     if policy is not None and not repo_errors:
-        if args.check:
-            repo_errors = verify_repository_policy(
-                args.manifest.parent, set(policy.allowed), expected_baseurls=policy.baseurls,
-                expected_security=policy.options, check_mode=True,
-            )
-        else:
-            try:
-                repos_dirs = runtime_reposdir_paths()
-            except Dnf5ConfigError as error:
-                repo_errors = [str(error)]
-            else:
-                repo_errors = verify_runtime_repository_policy(
-                    policy, root=RUNTIME_ROOT, repos_dirs=repos_dirs,
-                )
+        repo_errors = verify_repository_policy_from_manifest(
+            overlay, check_mode=args.check, policy=policy,
+        )
     if repo_errors or policy is None:
         for error in repo_errors:
             print(f"ERROR: {error}", file=sys.stderr)
@@ -1010,6 +990,8 @@ def main() -> int:
         return 1
     factory_packages = set(section(overlay, "factory"))
     factory_parity = set(section(overlay, "factory", "parity"))
+    # [factory].packages is the GNOME identity contract; other sections use
+    # explicit factory buckets (currently parity), never an inert declaration.
     for pkg in factory_packages:
         assert pkg in set(section(overlay, "gnome")), (
             f"Factory package '{pkg}' is not declared in the [gnome] section"
@@ -1047,8 +1029,12 @@ def main() -> int:
             assert pkg in parity, (
                 f"Factory parity package '{pkg}' is not declared in the [parity] section"
             )
+        # A [gnome.versions] key that names no [gnome] package asserts nothing:
+        # verify_gnome_contract looks versions up by package name, so a typo
+        # would silently drop that package's major-version claim on-image.
+        gnome_names = set(gnome)
         for pkg in major_versions:
-            assert pkg in gnome, (
+            assert pkg in gnome_names, (
                 f"[gnome.versions] key '{pkg}' is not declared in the [gnome] section"
             )
         print(

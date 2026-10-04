@@ -143,6 +143,23 @@ class RepositoryOptionPolicyTests(unittest.TestCase):
             [],
         )
 
+    def test_nvidia_metadata_signature_exception_is_explicit(self) -> None:
+        repo_id = "nvidia-container-toolkit"
+        baseurl = "https://nvidia.github.io/libnvidia-container/stable/rpm/$basearch"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser[repo_id] = {
+            "enabled": "0", "baseurl": baseurl, "gpgcheck": "0",
+            "repo_gpgcheck": "1", "sslverify": "1", "proxy": "",
+        }
+        repo_policy = policy(
+            {repo_id}, {repo_id: (baseurl,)},
+            {repo_id: {"gpgcheck": "0", "repo_gpgcheck": "1", "sslverify": "1", "proxy": ""}},
+        )
+        self.assertEqual(check_sections(parser, "nvidia.repo", repo_policy), [])
+        parser[repo_id]["repo_gpgcheck"] = "0"
+        self.assertTrue(any("repo_gpgcheck" in error for error in
+                            check_sections(parser, "nvidia.repo", repo_policy)))
+
     def test_an_allowlisted_id_needs_both_origin_and_security_pins(self) -> None:
         errors = check_sections(
             config(gpgcheck="1", repo_gpgcheck="0", sslverify="1"),

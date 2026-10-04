@@ -132,7 +132,6 @@ def run_main(module, manifest: Path, overlay: Path, installed: set[str],
              extra_argv: list[str] | None = None,
              report_dir: Path | None = None,
              runtime_repos_dirs: "Path | list[Path] | None" = None,
-             runtime_repos_dir: Path | None = None,
              stderr_buffer: io.StringIO | None = None,
              reposdir_error: Exception | None = None) -> tuple[int, str, str]:
     """Invoke scripts/verify-rpm-contract.py's main() with stubbed packages.
@@ -178,8 +177,6 @@ def run_main(module, manifest: Path, overlay: Path, installed: set[str],
     # A single dir for the common case, or a list to cover the on-image scan
     # over all of dnf5's default reposdir paths (#513).
     runtime_root = Path(tempfile.mkdtemp())
-    if runtime_repos_dir is not None:
-        runtime_repos_dirs = runtime_repos_dir
     if runtime_repos_dirs is None:
         runtime_repos: list[Path] = [Path(tempfile.mkdtemp())]
     elif isinstance(runtime_repos_dirs, Path):
@@ -394,14 +391,12 @@ class VerifyModeTests(unittest.TestCase):
                  multilib: set[str] | None = None,
                  extra_argv: list[str] | None = None,
                  report_dir: Path | None = None,
-                 runtime_repos_dirs: "Path | list[Path] | None" = None,
-                 runtime_repos_dir: Path | None = None) -> tuple[int, str]:
+                 runtime_repos_dirs: "Path | list[Path] | None" = None) -> tuple[int, str]:
         code, out, _ = run_main(
             self.module, manifest, overlay, installed,
             flavor=flavor, releases=releases, multilib=multilib,
             extra_argv=extra_argv, report_dir=report_dir,
             runtime_repos_dirs=runtime_repos_dirs,
-            runtime_repos_dir=runtime_repos_dir,
         )
         return code, out
 

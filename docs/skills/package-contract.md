@@ -39,11 +39,7 @@ policy for changing them.
   addition to* or *instead of* the contract lives here. The full rules are in
   the header comment of that file (cite it; do not move or copy it):
 
-  - `[gnome]` — GNOME desktop contract Hummingbird does not ship. Each entry
-    is also a **version + release-identity assertion**: the resolved package
-    must match the major declared in `[gnome.versions]` and carry a factory or
-    Hummingbird release tag (`verify_gnome_contract`), so a GNOME package that
-    silently resolves to a bare Fedora release fails the contract.
+  - `[gnome]` — GNOME 51 desktop contract Hummingbird does not ship.
   - `[build]` — toolchain needed to build the pinned GNOME extensions
     (`scripts/build-gnome-extensions.sh`).
   - `[parity]` — what Bluefin inherits from Fedora's base image and Hummingbird
@@ -131,74 +127,55 @@ a permanent layer behind, so reproducibility now comes from the digest-pinned
 `packages` stage being the only source the package transaction can see rather
 than from the repository contents living in the image.
 
-## Supply-chain attestation
+The allowlist also runs **on-image**, against the composed image's runtime RPM
+repositories, not just the source files in `packages/`. `verify-rpm-contract.py`
+scans every `reposdir` dnf5 resolves at runtime, not a hardcoded list of
+defaults (#454, #513, #536). It also attests effective security options after
+DNF5 main-config inheritance and repository overrides, not just the original
+repository file's text (#345).
 
-`verify-rpm-contract.py` asserts more than package-name presence. Beyond the
-install-set check it attests the supply chain the image is composed from
-(issue #21):
+- The `reposdir=` option in `/usr/share/dnf5/libdnf.conf.d/*.conf`,
+  `/etc/dnf/libdnf5.conf.d/*.conf`, or `/etc/dnf/dnf.conf` replaces the
+  documented default list. The gate loads these `[main]` configs in dnf5's
+  order — drop-ins merged by file name (an `/etc` file masks a same-named
+  `/usr/share` file) and applied sorted by file name, then `dnf.conf` — and
+  uses the last-set value if any, so a custom reposdir the base image
+  configures is scanned instead of the three defaults (#536).
+- Without `reposdir=` configured, the gate falls back to dnf5's documented
+  defaults — `/etc/yum.repos.d`, `/etc/distro.repos.d`,
+  `/usr/share/dnf5/repos.d` — so a `.repo` file the base ships anywhere in
+  those paths is subject to the same allowlist (#454, #513). A repo file the
+  base ships in `/etc/distro.repos.d` or `/usr/share/dnf5/repos.d` is enabled
+  at runtime exactly as one in `/etc/yum.repos.d`, so scanning only the
+  first would leave it invisible to the gate (#513).
 
-- **GNOME version and release identity** (`verify_gnome_contract`) — every
-  package in `[gnome]` must resolve to the major version declared in
-  `[gnome.versions]`, and its release must carry the factory or Hummingbird
-  identity (a `.bfin`/`.hum` release tag). A GNOME package resolving to a bare
-  Fedora release is rejected: the factory builds GNOME, not the runtime base.
-- **Parity origin** (`verify_parity_origin`) — a Bluefin parity package named
-  in `[factory] parity` must carry the factory's `.bfin` release identity, so a
-  package the factory supplies cannot silently resolve from another repository;
-  every other parity package is rejected if it resolves to a bare Fedora
-  release. This runs on-image only, against the releases RPM actually resolved:
-  `--check` has no installed packages to read and does not call it. `--check`
-  asserts that `[factory].packages` names GNOME packages and `[factory].parity`
-  names parity packages. Both modes reject declarations outside those sections.
-- **Repository allowlist** (`verify_repository_policy`) — source `.repo` files
-  reject enabled Fedora/unapproved repositories and pin every allowlisted
-  origin, including the disabled NVIDIA repository. Proxy/TLS drift on an
-  allowlisted repo is rejected. A `# builder-only: true` file is skipped only
-  when the Containerfile copies it into a builder and never the final stage.
-  `--check` scans `packages/*.repo`; on-image verification scans every
-  configured `reposdir` with no builder exemptions, including inherited files.
-  Preserve the fail-closed reposdir parser when merging base changes: it uses
-  case-sensitive `=` keys, expands supported architecture variables, and
-  rejects unresolved variables rather than silently scanning literal paths.
-  The exact pinned base (`sha256:ddf19cc52fccb9ad4819b0fb9289f26912894c95555ccb4e95dc38e1dab4dc12`)
-  was inspected: it ships only `hummingbird.repo` there, with
-  `[public-hummingbird-$basearch-rpms]` and the `/public-hummingbird/$arch/`
-  baseurl, plus a disabled source section. Utah's runtime COPY replaces that
-  file with its explicit x86_64 pin. A renamed/new inherited enabled repository
-  must fail the gate; do not delete inherited files to make it pass. A future
-  base pin requires fresh inventory and a real composed-image verification.
-  Repository security is declared per ID in `[repositories.security]`:
-  `gpgcheck`, `repo_gpgcheck`, `sslverify`, and `proxy` must match the effective
-  settings. The OCI factory digest and NVIDIA's signed-repodata arrangement
-  remain explicit signature-check exceptions, not a global bypass.
-  Runtime loading follows DNF5 5.4.6.0's `Base::load_config` and
-  `RepoSack::create_repos_from_system_configuration`: combine distribution
-  `/usr/share/dnf5/libdnf.conf.d/*.conf` with user
-  `/etc/dnf/libdnf5.conf.d/*.conf` (user basename masks distribution), sort,
-  then load `/etc/dnf/dnf.conf` last. Repository options inherit the effective
-  main values before repository-specific options. Repositories come from
-  `dnf.conf` plus `reposdir` (defaults: `/etc/yum.repos.d`, `/etc/distro.repos.d`,
-  `/usr/share/dnf5/repos.d`). Finally apply masked, sorted
-  `/usr/share/dnf5/repos.override.d/*.repo` and
-  `/etc/dnf/repos.override.d/*.repo`, whose section IDs support globs and modify
-  only existing repositories. A later override can restore or weaken earlier
-  values; attest the final result, not every historical text assignment.
-  DNF5's `pkg_gpgcheck` alias and `gpgcheck_policy` expansion also participate.
-  `/etc/dnf/libdnf5.conf` and `/etc/yum/repos.d` are not DNF5 defaults.
-  Primary references: [configuration reference](https://dnf5.readthedocs.io/en/latest/dnf5.conf.5.html),
-  [base loader](https://github.com/rpm-software-management/dnf5/blob/5.4.6.0/libdnf5/base/base.cpp),
-  [repo loader](https://github.com/rpm-software-management/dnf5/blob/5.4.6.0/libdnf5/repo/repo_sack.cpp),
-  [signature defaults/policy](https://github.com/rpm-software-management/dnf5/blob/5.4.6.0/libdnf5/conf/config_main.cpp).
-- **Build provenance** (`generate_provenance_report`) — the resolved
-  package-origin/NEVRA data is written as JSON plus a human-readable report to
-  `$UTAH_REPORT_DIR` (default `/usr/share/utah`), retaining the image flavor,
-  the factory pin read from the `# factory-pin:` stamp in
-  `/etc/yum.repos.d/utah-packages.repo`, the `BASE_IMAGE` reference and its
-  digest, per-package origin and section, and the allowed-repository list. The
-  build timestamp is recorded only when `SOURCE_DATE_EPOCH` is exported;
-  otherwise `timestamp` is null and `timestamp_source` is `unset`. A sentinel
-  epoch used to be stamped instead, which asserted a build date that was never
-  true.
+### Effective repository security
+
+`[repositories.security]` declares the expected `gpgcheck`, `repo_gpgcheck`,
+`sslverify`, and `proxy` for each allowlisted ID. Every effective value must
+match, even on a disabled allowlisted repository. The digest-pinned local
+`utah-packages` OCI payload explicitly uses `gpgcheck=0`; NVIDIA explicitly uses
+`gpgcheck=0` with `repo_gpgcheck=1` (signed metadata authenticates RPM checksums).
+These are per-repository exceptions, never a global signature-check bypass.
+
+Runtime options inherit distribution/user main drop-ins (basename masking and
+sorted load order), then `dnf.conf`, then repository-specific settings.
+`[main] proxy=` in `/etc/dnf/libdnf5.conf.d/*.conf` is checked too. Finally,
+masked and sorted `/usr/share/dnf5/repos.override.d/*.repo` and
+`/etc/dnf/repos.override.d/*.repo` apply wildcard sections to existing IDs.
+Attest that final result, including the `pkg_gpgcheck` alias and
+`gpgcheck_policy` expansion. Overrides cannot create new repositories.
+`/etc/dnf/libdnf5.conf` is not a DNF5 config path.
+
+Keep `runtime_reposdir_paths()` and its fail-closed parsing safeguards when
+merging base updates: case-sensitive `=` keys, architecture substitution,
+and rejection of unresolved variables. Do not add a parallel default list.
+Do not claim a current-base inventory from a historical inspection: each base
+pin change needs fresh inventory and real composed-image validation.
+
+Primary references: [configuration reference](https://dnf5.readthedocs.io/en/latest/dnf5.conf.5.html),
+[base loader](https://github.com/rpm-software-management/dnf5/blob/5.4.6.0/libdnf5/base/base.cpp),
+[repo loader](https://github.com/rpm-software-management/dnf5/blob/5.4.6.0/libdnf5/repo/repo_sack.cpp).
 
 ## Printing and scanning gaps
 
