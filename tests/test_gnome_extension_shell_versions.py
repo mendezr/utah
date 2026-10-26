@@ -46,11 +46,11 @@ class ShellVersionReportTests(unittest.TestCase):
             for name, version in (("syncthing-toggle", "50"), ("power-status-color", "51")):
                 (extension / "extensions" / name).mkdir(parents=True)
                 (extension / "extensions" / name / "metadata.json").write_text(
-                    '{"shell-version": ["%s"]}' % version
+                    '{"uuid": "%s@projectbluefin.io", "shell-version": ["%s"]}' % (name, version)
                 )
             self.assertEqual(
                 MODULE.shell_versions(extension, base),
-                "syncthing-toggle@projectbluefin.io: 50; power-status-color@projectbluefin.io: 51",
+                "power-status-color@projectbluefin.io: 51; syncthing-toggle@projectbluefin.io: 50",
             )
 
     def test_every_submodule_maps_to_verifier_metadata(self) -> None:
@@ -112,7 +112,8 @@ class ShellVersionReportTests(unittest.TestCase):
             extension = base / "tmp/bluefin-bling"
             metadata = extension / "extensions/syncthing-toggle/metadata.json"
             metadata.parent.mkdir(parents=True)
-            metadata.write_text('{"shell-version": ["51"]}')
+            metadata.write_text('{"uuid": "syncthing-toggle@projectbluefin.io", "shell-version": ["51"]}')
+            (extension / "extensions/missing-metadata").mkdir()
             with self.assertRaises(ValueError):
                 MODULE.shell_versions(extension, base)
 

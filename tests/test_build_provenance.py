@@ -24,8 +24,10 @@ class ProvenanceTests(unittest.TestCase):
                 self.assertNotIn("commit", record)
                 self.assertRegex(record["archive"]["digest"], r"^sha256:[0-9a-f]{64}$")
         bling = [r for r in records if r["repo"].endswith("/bluefin-bling.git")]
-        self.assertEqual(len(bling), 2)
-        self.assertEqual(bling[0]["commit"], bling[1]["commit"])
+        expected = MODULE.bling_extensions(ROOT / MODULE.EXTENSION_BASE)
+        self.assertEqual({r["uuid"] for r in bling}, set(expected))
+        self.assertEqual(len({r["commit"] for r in bling}), 1)
+        self.assertIn("light-style@projectbluefin.io", expected)
 
     def test_rejects_checkout_that_differs_from_gitlink(self):
         real = MODULE.subprocess.check_output

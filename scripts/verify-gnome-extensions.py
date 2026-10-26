@@ -30,12 +30,41 @@ SOURCE_EXTENSIONS = {
     "quicksettings-audio-devices-hider@marcinjahn.com": "tmp/quicksettings-audio-devices-hider/resources/metadata.json",
     "quicksettings-audio-devices-renamer@marcinjahn.com": "tmp/quicksettings-audio-devices-renamer/resources/metadata.json",
     "tailscale-gnome-qs@tailscale-qs.github.io": "tmp/tailscale-gnome-qs/tailscale-gnome-qs@tailscale-qs.github.io/metadata.json",
-    "syncthing-toggle@projectbluefin.io": "tmp/bluefin-bling/extensions/syncthing-toggle/metadata.json",
-    "power-status-color@projectbluefin.io": "tmp/bluefin-bling/extensions/power-status-color/metadata.json",
 }
 
 
 EXTENSION_BASE = "system_files/shared/usr/share/gnome-shell/extensions/"
+BLING_BASE = Path("tmp/bluefin-bling/extensions")
+
+
+def bling_extensions(base: Path) -> dict[str, str]:
+    """Discover every bling folder; UUIDs must be safe directory/table names."""
+    folders = sorted(path for path in (base / BLING_BASE).glob("*/") if path.is_dir())
+    if not folders:
+        raise ValueError(f"no bluefin-bling extensions found under {base / BLING_BASE}")
+    extensions = {}
+    for folder in folders:
+        metadata = folder / "metadata.json"
+        try:
+            data = json.loads(metadata.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid metadata {metadata}: {error}") from error
+        uuid = data.get("uuid") if isinstance(data, dict) else None
+        if not isinstance(uuid, str) or not re.fullmatch(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+", uuid):
+            raise ValueError(f"invalid uuid in {metadata}: {uuid!r}")
+        relative = str(metadata.relative_to(base))
+        if uuid in extensions or (uuid in SOURCE_EXTENSIONS and SOURCE_EXTENSIONS[uuid] != relative):
+            raise ValueError(f"duplicate uuid in {metadata}: {uuid}")
+        extensions[uuid] = relative
+    return extensions
+
+
+# The installed verifier has no submodule tree: tmp/ is removed by the build.
+# There, the source-generated provenance supplies the complete expected set.
+_SOURCE_BASE = Path(__file__).resolve().parents[1] / EXTENSION_BASE
+if _SOURCE_BASE.is_dir():
+    SOURCE_EXTENSIONS.update(bling_extensions(_SOURCE_BASE))
+
 ARCHIVES = {
     "tilingshell@ferrarodomenico.com": "tilingshell",
     "quick-settings-audio-panel@rayzeq.github.io": "qsap",
@@ -147,6 +176,18 @@ def main() -> int:
         if args.source
         else args.root / "usr/share/gnome-shell/extensions"
     )
+    if not args.source and not _SOURCE_BASE.is_dir():
+        provenance = args.root / "usr/share/utah/provenance.json"
+        if "GNOME_EXTENSION_PROVENANCE" in os.environ:
+            records = json.loads(os.environ["GNOME_EXTENSION_PROVENANCE"])
+        else:
+            records = json.loads(provenance.read_text())["gnome_extensions"]
+        for record in records:
+            uuid = record["uuid"]
+            if not isinstance(uuid, str) or not re.fullmatch(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9_.-]+", uuid):
+                raise ValueError(f"invalid provenance uuid: {uuid!r}")
+            SOURCE_EXTENSIONS.setdefault(uuid, f"{uuid}/metadata.json")
+
     validation_disabled = version_validation_disabled(args.source, args.root)
     failures: list[str] = []
     for uuid, relative in SOURCE_EXTENSIONS.items():

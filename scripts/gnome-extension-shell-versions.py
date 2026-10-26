@@ -31,6 +31,8 @@ def metadata_files(extension: Path, base: Path = EXTENSIONS_BASE) -> list[tuple[
         submodule = extension.resolve().relative_to(base.resolve())
     except ValueError:
         submodule = None
+    if submodule == Path("tmp/bluefin-bling"):
+        return [(uuid, base / relative) for uuid, relative in _VERIFIER.bling_extensions(base).items()]
     found = []
     if submodule is not None:
         for uuid, relative in SOURCE_EXTENSIONS.items():
@@ -72,7 +74,7 @@ def shell_versions(extension: Path, base: Path = EXTENSIONS_BASE) -> str:
         raise ValueError(f"no metadata found for extension {extension}")
     if len(files) == 1:
         return read_versions(files[0][1])
-    # UUIDs come from the trusted in-repo map, not upstream content.
+    # Discovered upstream UUIDs are validated before rendering Markdown.
     return "; ".join(f"{uuid}: {read_versions(path)}" for uuid, path in files)
 
 
